@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <optional>
 
 #include "ir/module-utils.h"
 #include "ir/names.h"
@@ -109,10 +110,20 @@ int32_t WasmBinaryWriter::writeU32LEBPlaceholder() {
 }
 
 void WasmBinaryWriter::writeResizableLimits(
-  Address initial, Address maximum, bool hasMaximum, bool shared, bool is64) {
+  Address initial,
+  Address maximum,
+  bool hasMaximum,
+  bool shared,
+  bool is64,
+  std::optional<uint8_t> pageSizeLog2) {
+  uint8_t actualPageSizeLog2 =
+    pageSizeLog2 ? *pageSizeLog2 : Memory::kDefaultPageSizeLog2;
   uint32_t flags = (hasMaximum ? (uint32_t)BinaryConsts::HasMaximum : 0U) |
                    (shared ? (uint32_t)BinaryConsts::IsShared : 0U) |
-                   (is64 ? (uint32_t)BinaryConsts::Is64 : 0U);
+                   (is64 ? (uint32_t)BinaryConsts::Is64 : 0U) |
+                   (actualPageSizeLog2 != Memory::kDefaultPageSizeLog2
+                      ? (uint32_t)BinaryConsts::HasCustomPageSize
+                      : 0U);
   o << U32LEB(flags);
   if (is64) {
     o << U64LEB(initial);
@@ -124,6 +135,9 @@ void WasmBinaryWriter::writeResizableLimits(
     if (hasMaximum) {
       o << U32LEB(maximum);
     }
+  }
+  if (actualPageSizeLog2 != Memory::kDefaultPageSizeLog2) {
+    o << U32LEB(actualPageSizeLog2);
   }
 }
 
@@ -209,7 +223,8 @@ void WasmBinaryWriter::writeMemories() {
                          memory->max,
                          memory->hasMax(),
                          memory->shared,
-                         memory->is64());
+                         memory->is64(),
+                         memory->pageSizeLog2);
   });
   finishSection(start);
 }
@@ -354,7 +369,8 @@ void WasmBinaryWriter::writeImports() {
                          memory->max,
                          memory->hasMax(),
                          memory->shared,
-                         memory->is64());
+                         memory->is64(),
+                         memory->pageSizeLog2);
   });
   ModuleUtils::iterImportedTables(*wasm, [&](Table* table) {
     writeImportHeader(table);
@@ -1171,24 +1187,25 @@ void WasmBinaryWriter::writeNames() {
   }
 
   // tag names
-  if (!wasm->tags.empty()) {
-    Index count = 0;
-    for (auto& tag : wasm->tags) {
-      if (tag->hasExplicitName) {
-        count++;
+  {
+    std::vector<std::pair<Index, Tag*>> tagsWithNames;
+    Index checked = 0;
+    auto check = [&](Tag* curr) {
+      if (curr->hasExplicitName) {
+        tagsWithNames.push_back({checked, curr});
       }
-    }
-
-    if (count) {
+      checked++;
+    };
+    ModuleUtils::iterImportedTags(*wasm, check);
+    ModuleUtils::iterDefinedTags(*wasm, check);
+    assert(checked == indexes.tagIndexes.size());
+    if (tagsWithNames.size() > 0) {
       auto substart =
         startSubsection(BinaryConsts::CustomSections::Subsection::NameTag);
-      o << U32LEB(count);
-      for (Index i = 0; i < wasm->tags.size(); i++) {
-        auto& tag = wasm->tags[i];
-        if (tag->hasExplicitName) {
-          o << U32LEB(i);
-          writeEscapedName(tag->name.str);
-        }
+      o << U32LEB(tagsWithNames.size());
+      for (auto& [index, tag] : tagsWithNames) {
+        o << U32LEB(index);
+        writeEscapedName(tag->name.str);
       }
       finishSubsection(substart);
     }
@@ -1417,6 +1434,8 @@ void WasmBinaryWriter::writeFeaturesSection() {
         return BinaryConsts::CustomSections::MutableGlobalsFeature;
       case FeatureSet::TruncSat:
         return BinaryConsts::CustomSections::TruncSatFeature;
+      case FeatureSet::Multibyte:
+        return BinaryConsts::CustomSections::MultibyteFeature;
       case FeatureSet::SIMD:
         return BinaryConsts::CustomSections::SIMD128Feature;
       case FeatureSet::BulkMemory:
@@ -1457,6 +1476,8 @@ void WasmBinaryWriter::writeFeaturesSection() {
         return BinaryConsts::CustomSections::CustomDescriptorsFeature;
       case FeatureSet::RelaxedAtomics:
         return BinaryConsts::CustomSections::RelaxedAtomicsFeature;
+      case FeatureSet::CustomPageSizes:
+        return BinaryConsts::CustomSections::CustomPageSizesFeature;
       case FeatureSet::None:
       case FeatureSet::Default:
       case FeatureSet::All:
@@ -2628,6 +2649,7 @@ void WasmBinaryReader::readMemories() {
                        memory->max,
                        memory->shared,
                        memory->addressType,
+                       memory->pageSizeLog2,
                        Memory::kUnlimitedSize);
     wasm.addMemory(std::move(memory));
   }
@@ -2936,11 +2958,13 @@ void WasmBinaryReader::getResizableLimits(Address& initial,
                                           Address& max,
                                           bool& shared,
                                           Type& addressType,
+                                          uint8_t& pageSizeLog2,
                                           Address defaultIfNoMax) {
   auto flags = getU32LEB();
   bool hasMax = (flags & BinaryConsts::HasMaximum) != 0;
   bool isShared = (flags & BinaryConsts::IsShared) != 0;
   bool is64 = (flags & BinaryConsts::Is64) != 0;
+  bool hasCustomPageSize = (flags & BinaryConsts::HasCustomPageSize) != 0;
   initial = is64 ? getU64LEB() : getU32LEB();
   if (isShared && !hasMax) {
     throwError("shared memory must have max size");
@@ -2951,6 +2975,14 @@ void WasmBinaryReader::getResizableLimits(Address& initial,
     max = is64 ? getU64LEB() : getU32LEB();
   } else {
     max = defaultIfNoMax;
+  }
+  if (hasCustomPageSize) {
+    auto readPageSizeLog2 = getU32LEB();
+    if (readPageSizeLog2 != 0 &&
+        readPageSizeLog2 != Memory::kDefaultPageSizeLog2) {
+      throwError("Memory page size is only allowed to be 1 or 64 KiB");
+    }
+    pageSizeLog2 = (uint8_t)readPageSizeLog2;
   }
 }
 
@@ -3001,15 +3033,19 @@ void WasmBinaryReader::readImports() {
         table->module = module;
         table->base = base;
         table->type = getType();
-
         bool is_shared;
+        uint8_t page_size = 0xff;
         getResizableLimits(table->initial,
                            table->max,
                            is_shared,
                            table->addressType,
+                           page_size,
                            Table::kUnlimitedSize);
         if (is_shared) {
           throwError("Tables may not be shared");
+        }
+        if (page_size != 0xff) {
+          throwError("Tables may not have a custom page size");
         }
         wasm.addTable(std::move(table));
         break;
@@ -3028,6 +3064,7 @@ void WasmBinaryReader::readImports() {
                            memory->max,
                            memory->shared,
                            memory->addressType,
+                           memory->pageSizeLog2,
                            Memory::kUnlimitedSize);
         wasm.addMemory(std::move(memory));
         break;
@@ -3249,6 +3286,15 @@ void WasmBinaryReader::readVars() {
       num--;
     }
   }
+}
+
+Result<> WasmBinaryReader::readStore(unsigned bytes, Type type) {
+  auto [mem, align, offset, backing] = getMemarg();
+  if (backing == BackingType::Array) {
+    HeapType arrayType = getIndexedHeapType();
+    return builder.makeArrayStore(arrayType, bytes, type);
+  }
+  return builder.makeStore(bytes, offset, align, type, mem);
 }
 
 Result<> WasmBinaryReader::readInst() {
@@ -3590,96 +3636,87 @@ Result<> WasmBinaryReader::readInst() {
     case BinaryConsts::F64Const:
       return builder.makeConst(getFloat64Literal());
     case BinaryConsts::I32LoadMem8S: {
-      auto [mem, align, offset] = getMemarg();
+      auto [mem, align, offset, backing] = getMemarg();
       return builder.makeLoad(1, true, offset, align, Type::i32, mem);
     }
     case BinaryConsts::I32LoadMem8U: {
-      auto [mem, align, offset] = getMemarg();
+      auto [mem, align, offset, backing] = getMemarg();
       return builder.makeLoad(1, false, offset, align, Type::i32, mem);
     }
     case BinaryConsts::I32LoadMem16S: {
-      auto [mem, align, offset] = getMemarg();
+      auto [mem, align, offset, backing] = getMemarg();
       return builder.makeLoad(2, true, offset, align, Type::i32, mem);
     }
     case BinaryConsts::I32LoadMem16U: {
-      auto [mem, align, offset] = getMemarg();
+      auto [mem, align, offset, backing] = getMemarg();
       return builder.makeLoad(2, false, offset, align, Type::i32, mem);
     }
     case BinaryConsts::I32LoadMem: {
-      auto [mem, align, offset] = getMemarg();
+      auto [mem, align, offset, backing] = getMemarg();
       return builder.makeLoad(4, false, offset, align, Type::i32, mem);
     }
     case BinaryConsts::I64LoadMem8S: {
-      auto [mem, align, offset] = getMemarg();
+      auto [mem, align, offset, backing] = getMemarg();
       return builder.makeLoad(1, true, offset, align, Type::i64, mem);
     }
     case BinaryConsts::I64LoadMem8U: {
-      auto [mem, align, offset] = getMemarg();
+      auto [mem, align, offset, backing] = getMemarg();
       return builder.makeLoad(1, false, offset, align, Type::i64, mem);
     }
     case BinaryConsts::I64LoadMem16S: {
-      auto [mem, align, offset] = getMemarg();
+      auto [mem, align, offset, backing] = getMemarg();
       return builder.makeLoad(2, true, offset, align, Type::i64, mem);
     }
     case BinaryConsts::I64LoadMem16U: {
-      auto [mem, align, offset] = getMemarg();
+      auto [mem, align, offset, backing] = getMemarg();
       return builder.makeLoad(2, false, offset, align, Type::i64, mem);
     }
     case BinaryConsts::I64LoadMem32S: {
-      auto [mem, align, offset] = getMemarg();
+      auto [mem, align, offset, backing] = getMemarg();
       return builder.makeLoad(4, true, offset, align, Type::i64, mem);
     }
     case BinaryConsts::I64LoadMem32U: {
-      auto [mem, align, offset] = getMemarg();
+      auto [mem, align, offset, backing] = getMemarg();
       return builder.makeLoad(4, false, offset, align, Type::i64, mem);
     }
     case BinaryConsts::I64LoadMem: {
-      auto [mem, align, offset] = getMemarg();
+      auto [mem, align, offset, backing] = getMemarg();
       return builder.makeLoad(8, false, offset, align, Type::i64, mem);
     }
     case BinaryConsts::F32LoadMem: {
-      auto [mem, align, offset] = getMemarg();
+      auto [mem, align, offset, backing] = getMemarg();
       return builder.makeLoad(4, false, offset, align, Type::f32, mem);
     }
     case BinaryConsts::F64LoadMem: {
-      auto [mem, align, offset] = getMemarg();
+      auto [mem, align, offset, backing] = getMemarg();
       return builder.makeLoad(8, false, offset, align, Type::f64, mem);
     }
     case BinaryConsts::I32StoreMem8: {
-      auto [mem, align, offset] = getMemarg();
-      return builder.makeStore(1, offset, align, Type::i32, mem);
+      return readStore(1, Type::i32);
     }
     case BinaryConsts::I32StoreMem16: {
-      auto [mem, align, offset] = getMemarg();
-      return builder.makeStore(2, offset, align, Type::i32, mem);
+      return readStore(2, Type::i32);
     }
     case BinaryConsts::I32StoreMem: {
-      auto [mem, align, offset] = getMemarg();
-      return builder.makeStore(4, offset, align, Type::i32, mem);
+      return readStore(4, Type::i32);
     }
     case BinaryConsts::I64StoreMem8: {
-      auto [mem, align, offset] = getMemarg();
-      return builder.makeStore(1, offset, align, Type::i64, mem);
+      return readStore(1, Type::i64);
     }
     case BinaryConsts::I64StoreMem16: {
-      auto [mem, align, offset] = getMemarg();
-      return builder.makeStore(2, offset, align, Type::i64, mem);
+      return readStore(2, Type::i64);
     }
     case BinaryConsts::I64StoreMem32: {
-      auto [mem, align, offset] = getMemarg();
-      return builder.makeStore(4, offset, align, Type::i64, mem);
+      return readStore(4, Type::i64);
     }
     case BinaryConsts::I64StoreMem: {
-      auto [mem, align, offset] = getMemarg();
-      return builder.makeStore(8, offset, align, Type::i64, mem);
+      return readStore(8, Type::i64);
     }
     case BinaryConsts::F32StoreMem: {
-      auto [mem, align, offset] = getMemarg();
-      return builder.makeStore(4, offset, align, Type::f32, mem);
+      return readStore(4, Type::f32);
     }
     case BinaryConsts::F64StoreMem: {
-      auto [mem, align, offset] = getMemarg();
-      return builder.makeStore(8, offset, align, Type::f64, mem);
+      return readStore(8, Type::f64);
     }
     case BinaryConsts::AtomicPrefix: {
       auto op = getU32LEB();
@@ -3984,11 +4021,11 @@ Result<> WasmBinaryReader::readInst() {
           return builder.makeElemDrop(elem);
         }
         case BinaryConsts::F32_F16LoadMem: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeLoad(2, false, offset, align, Type::f32, mem);
         }
         case BinaryConsts::F32_F16StoreMem: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeStore(2, offset, align, Type::f32, mem);
         }
       }
@@ -4492,10 +4529,10 @@ Result<> WasmBinaryReader::readInst() {
           return builder.makeSIMDTernary(LaneselectI32x4);
         case BinaryConsts::I64x2Laneselect:
           return builder.makeSIMDTernary(LaneselectI64x2);
-        case BinaryConsts::F16x8RelaxedMadd:
-          return builder.makeSIMDTernary(RelaxedMaddVecF16x8);
-        case BinaryConsts::F16x8RelaxedNmadd:
-          return builder.makeSIMDTernary(RelaxedNmaddVecF16x8);
+        case BinaryConsts::F16x8Madd:
+          return builder.makeSIMDTernary(MaddVecF16x8);
+        case BinaryConsts::F16x8Nmadd:
+          return builder.makeSIMDTernary(NmaddVecF16x8);
         case BinaryConsts::F32x4RelaxedMadd:
           return builder.makeSIMDTernary(RelaxedMaddVecF32x4);
         case BinaryConsts::F32x4RelaxedNmadd:
@@ -4533,98 +4570,98 @@ Result<> WasmBinaryReader::readInst() {
         case BinaryConsts::V128Const:
           return builder.makeConst(getVec128Literal());
         case BinaryConsts::V128Store: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeStore(16, offset, align, Type::v128, mem);
         }
         case BinaryConsts::V128Load: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeLoad(16, false, offset, align, Type::v128, mem);
         }
         case BinaryConsts::V128Load8Splat: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeSIMDLoad(Load8SplatVec128, offset, align, mem);
         }
         case BinaryConsts::V128Load16Splat: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeSIMDLoad(Load16SplatVec128, offset, align, mem);
         }
         case BinaryConsts::V128Load32Splat: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeSIMDLoad(Load32SplatVec128, offset, align, mem);
         }
         case BinaryConsts::V128Load64Splat: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeSIMDLoad(Load64SplatVec128, offset, align, mem);
         }
         case BinaryConsts::V128Load8x8S: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeSIMDLoad(Load8x8SVec128, offset, align, mem);
         }
         case BinaryConsts::V128Load8x8U: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeSIMDLoad(Load8x8UVec128, offset, align, mem);
         }
         case BinaryConsts::V128Load16x4S: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeSIMDLoad(Load16x4SVec128, offset, align, mem);
         }
         case BinaryConsts::V128Load16x4U: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeSIMDLoad(Load16x4UVec128, offset, align, mem);
         }
         case BinaryConsts::V128Load32x2S: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeSIMDLoad(Load32x2SVec128, offset, align, mem);
         }
         case BinaryConsts::V128Load32x2U: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeSIMDLoad(Load32x2UVec128, offset, align, mem);
         }
         case BinaryConsts::V128Load32Zero: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeSIMDLoad(Load32ZeroVec128, offset, align, mem);
         }
         case BinaryConsts::V128Load64Zero: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeSIMDLoad(Load64ZeroVec128, offset, align, mem);
         }
         case BinaryConsts::V128Load8Lane: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeSIMDLoadStoreLane(
             Load8LaneVec128, offset, align, getLaneIndex(16), mem);
         }
         case BinaryConsts::V128Load16Lane: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeSIMDLoadStoreLane(
             Load16LaneVec128, offset, align, getLaneIndex(8), mem);
         }
         case BinaryConsts::V128Load32Lane: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeSIMDLoadStoreLane(
             Load32LaneVec128, offset, align, getLaneIndex(4), mem);
         }
         case BinaryConsts::V128Load64Lane: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeSIMDLoadStoreLane(
             Load64LaneVec128, offset, align, getLaneIndex(2), mem);
         }
         case BinaryConsts::V128Store8Lane: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeSIMDLoadStoreLane(
             Store8LaneVec128, offset, align, getLaneIndex(16), mem);
         }
         case BinaryConsts::V128Store16Lane: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeSIMDLoadStoreLane(
             Store16LaneVec128, offset, align, getLaneIndex(8), mem);
         }
         case BinaryConsts::V128Store32Lane: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeSIMDLoadStoreLane(
             Store32LaneVec128, offset, align, getLaneIndex(4), mem);
         }
         case BinaryConsts::V128Store64Lane: {
-          auto [mem, align, offset] = getMemarg();
+          auto [mem, align, offset, backing] = getMemarg();
           return builder.makeSIMDLoadStoreLane(
             Store64LaneVec128, offset, align, getLaneIndex(2), mem);
         }
@@ -5009,13 +5046,18 @@ void WasmBinaryReader::readTableDeclarations() {
     auto table = Builder::makeTable(name, elemType);
     table->hasExplicitName = isExplicit;
     bool is_shared;
+    uint8_t pageSize = 0xff;
     getResizableLimits(table->initial,
                        table->max,
                        is_shared,
                        table->addressType,
+                       pageSize,
                        Table::kUnlimitedSize);
     if (is_shared) {
       throwError("Tables may not be shared");
+    }
+    if (pageSize != 0xff) {
+      throwError("Tables may not specify a custom page size");
     }
     wasm.addTable(std::move(table));
   }
@@ -5389,6 +5431,8 @@ void WasmBinaryReader::readFeatures(size_t sectionPos, size_t payloadLen) {
       feature = FeatureSet::CustomDescriptors;
     } else if (name == BinaryConsts::CustomSections::RelaxedAtomicsFeature) {
       feature = FeatureSet::RelaxedAtomics;
+    } else if (name == BinaryConsts::CustomSections::CustomPageSizesFeature) {
+      feature = FeatureSet::CustomPageSizes;
     } else {
       // Silently ignore unknown features (this may be and old binaryen running
       // on a new wasm).
@@ -5584,10 +5628,12 @@ void WasmBinaryReader::readIdempotentHints(size_t payloadLen) {
   READ_BOOLEAN_HINT(Annotations::IdempotentHint, idempotent);
 }
 
-std::tuple<Address, Address, Index, MemoryOrder>
+std::tuple<Address, Address, Index, MemoryOrder, BackingType>
 WasmBinaryReader::readMemoryAccess(bool isAtomic, bool isRMW) {
   auto rawAlignment = getU32LEB();
+  BackingType backing = BackingType::Memory;
   Index memIdx = 0;
+  Address offset = 0;
 
   bool hasMemoryOrder = rawAlignment & BinaryConsts::HasMemoryOrderMask;
   if (hasMemoryOrder && !isAtomic) {
@@ -5605,6 +5651,12 @@ WasmBinaryReader::readMemoryAccess(bool isAtomic, bool isRMW) {
     rawAlignment = rawAlignment & ~BinaryConsts::HasMemoryIndexMask;
   }
 
+  if (rawAlignment & BinaryConsts::HasBackingArrayMask) {
+    backing = BackingType::Array;
+    // Clear the bit before we parse alignment
+    rawAlignment = rawAlignment & ~BinaryConsts::HasBackingArrayMask;
+  }
+
   if (rawAlignment > 8) {
     throwError("Alignment must be of a reasonable size");
   }
@@ -5612,39 +5664,52 @@ WasmBinaryReader::readMemoryAccess(bool isAtomic, bool isRMW) {
   Address alignment = Bits::pow2(rawAlignment);
   MemoryOrder memoryOrder =
     isAtomic ? MemoryOrder::SeqCst : MemoryOrder::Unordered;
-  if (hasMemIdx) {
-    memIdx = getU32LEB();
-  }
-  if (hasMemoryOrder) {
-    memoryOrder = getMemoryOrder(isRMW);
-  }
-  if (memIdx >= wasm.memories.size()) {
-    throwError("Memory index out of range while reading memory alignment.");
-  }
-  auto* memory = wasm.memories[memIdx].get();
-  Address offset = memory->addressType == Type::i32 ? getU32LEB() : getU64LEB();
 
-  return {alignment, offset, memIdx, memoryOrder};
+  if (backing == BackingType::Memory) {
+    if (hasMemIdx) {
+      memIdx = getU32LEB();
+    }
+    if (hasMemoryOrder) {
+      memoryOrder = getMemoryOrder(isRMW);
+    }
+    if (memIdx >= wasm.memories.size()) {
+      throwError("Memory index out of range while reading memory alignment.");
+    }
+    auto* memory = wasm.memories[memIdx].get();
+    offset = memory->addressType == Type::i32 ? getU32LEB() : getU64LEB();
+  } else if (backing == BackingType::Array) {
+    if (hasMemIdx || hasMemoryOrder) {
+      throwError(
+        "Memory index and memory order are not allowed for array backing.");
+    }
+  } else {
+    WASM_UNREACHABLE("Invalid backing type");
+  }
+
+  return {alignment, offset, memIdx, memoryOrder, backing};
 }
 
 std::tuple<Name, Address, Address, MemoryOrder>
 WasmBinaryReader::getAtomicMemarg() {
-  auto [alignment, offset, memIdx, memoryOrder] =
+  auto [alignment, offset, memIdx, memoryOrder, backing] =
     readMemoryAccess(/*isAtomic=*/true, /*isRMW=*/false);
   return {getMemoryName(memIdx), alignment, offset, memoryOrder};
 }
 
 std::tuple<Name, Address, Address, MemoryOrder>
 WasmBinaryReader::getRMWMemarg() {
-  auto [alignment, offset, memIdx, memoryOrder] =
+  auto [alignment, offset, memIdx, memoryOrder, backing] =
     readMemoryAccess(/*isAtomic=*/true, /*isRMW=*/true);
   return {getMemoryName(memIdx), alignment, offset, memoryOrder};
 }
 
-std::tuple<Name, Address, Address> WasmBinaryReader::getMemarg() {
-  auto [alignment, offset, memIdx, _] =
+std::tuple<Name, Address, Address, BackingType> WasmBinaryReader::getMemarg() {
+  auto [alignment, offset, memIdx, memoryOrder, backing] =
     readMemoryAccess(/*isAtomic=*/false, /*isRMW=*/false);
-  return {getMemoryName(memIdx), alignment, offset};
+  if (backing == BackingType::Array) {
+    return {Name(), alignment, offset, backing};
+  }
+  return {getMemoryName(memIdx), alignment, offset, backing};
 }
 
 MemoryOrder WasmBinaryReader::getMemoryOrder(bool isRMW) {

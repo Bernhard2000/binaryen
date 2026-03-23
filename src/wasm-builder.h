@@ -130,15 +130,18 @@ public:
     return seg;
   }
 
-  static std::unique_ptr<Memory> makeMemory(Name name,
-                                            Address initial = 0,
-                                            Address max = Memory::kMaxSize32,
-                                            bool shared = false,
-                                            Type addressType = Type::i32) {
+  static std::unique_ptr<Memory>
+  makeMemory(Name name,
+             Address initial = 0,
+             Address max = Memory::kDefaultMaxSize32,
+             bool shared = false,
+             uint8_t pageSizeLog2 = Memory::kDefaultPageSizeLog2,
+             Type addressType = Type::i32) {
     auto memory = std::make_unique<Memory>();
     memory->name = name;
     memory->initial = initial;
     memory->max = max;
+    memory->pageSizeLog2 = pageSizeLog2;
     memory->shared = shared;
     memory->addressType = addressType;
     return memory;
@@ -1129,6 +1132,18 @@ public:
     ret->finalize();
     return ret;
   }
+  ArrayStore* makeArrayStore(unsigned bytes,
+                             Expression* ref,
+                             Expression* index,
+                             Expression* value) {
+    auto* ret = wasm.allocator.alloc<ArrayStore>();
+    ret->bytes = bytes;
+    ret->ref = ref;
+    ret->index = index;
+    ret->value = value;
+    ret->finalize();
+    return ret;
+  }
   ArrayLen* makeArrayLen(Expression* ref) {
     auto* ret = wasm.allocator.alloc<ArrayLen>();
     ret->ref = ref;
@@ -1316,6 +1331,16 @@ public:
     ret->finalize();
     return ret;
   }
+  template<typename T>
+  ContBind*
+  makeContBind(HeapType targetType, const T& operands, Expression* cont) {
+    auto* ret = wasm.allocator.alloc<ContBind>();
+    ret->type = Type(targetType, NonNullable, Exact);
+    ret->operands.set(operands);
+    ret->cont = cont;
+    ret->finalize();
+    return ret;
+  }
   Suspend* makeSuspend(Name tag, const std::vector<Expression*>& args) {
     auto* ret = wasm.allocator.alloc<Suspend>();
     ret->tag = tag;
@@ -1333,6 +1358,21 @@ public:
     ret->handlerBlocks.set(handlerBlocks);
     ret->sentTypes.set(sentTypes);
     ret->operands = std::move(operands);
+    ret->cont = cont;
+    ret->finalize();
+    return ret;
+  }
+  template<typename T>
+  Resume* makeResume(const std::vector<Name>& handlerTags,
+                     const std::vector<Name>& handlerBlocks,
+                     const std::vector<Type>& sentTypes,
+                     ExpressionList& operands,
+                     Expression* cont) {
+    auto* ret = wasm.allocator.alloc<Resume>();
+    ret->handlerTags.set(handlerTags);
+    ret->handlerBlocks.set(handlerBlocks);
+    ret->sentTypes.set(sentTypes);
+    ret->operands.set(operands);
     ret->cont = cont;
     ret->finalize();
     return ret;
