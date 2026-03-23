@@ -10,6 +10,7 @@ set(fuzzing_SOURCES
 
 binaryen_add_executable(wasm-opt "${fuzzing_SOURCES};wasm-opt.cpp")
 binaryen_add_executable(wasm-metadce wasm-metadce.cpp)
+binaryen_add_executable(wasm-cfg wasm-cfg.cpp)
 binaryen_add_executable(wasm2js wasm2js.cpp)
 binaryen_add_executable(wasm-emscripten-finalize wasm-emscripten-finalize.cpp)
 binaryen_add_executable(wasm-as wasm-as.cpp)
