@@ -273,6 +273,14 @@ void PassRegistry::registerPasses() {
     "instrument the build with code to intercept all loads and stores",
     createInstrumentMemoryPass);
   registerPass(
+    "instrument-pgo",
+    "add PGO instrumentation for basic block profiling",
+    createInstrumentPGOPass);
+  registerPass(
+    "use-profile",
+    "apply profile-guided optimizations",
+    createUseProfilePass);
+  registerPass(
     "licm", "loop invariant code motion", createLoopInvariantCodeMotionPass);
   registerPass("limit-segments",
                "attempt to merge segments to fit within web limits",
