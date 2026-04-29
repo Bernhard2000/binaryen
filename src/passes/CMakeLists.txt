@@ -55,6 +55,8 @@ set(passes_SOURCES
   InstrumentBranchHints.cpp
   InstrumentLocals.cpp
   InstrumentMemory.cpp
+  InstrumentPGO.cpp
+  UseProfile.cpp
   Intrinsics.cpp
   J2CLItableMerging.cpp
   J2CLOpts.cpp
