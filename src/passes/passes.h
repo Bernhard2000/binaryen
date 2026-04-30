@@ -85,6 +85,7 @@ Pass* createTraceCallsPass();
 Pass* createInstrumentBranchHintsPass();
 Pass* createInstrumentLocalsPass();
 Pass* createInstrumentMemoryPass();
+Pass* createInstrumentPGOPass();
 Pass* createLLVMMemoryCopyFillLoweringPass();
 Pass* createLoopInvariantCodeMotionPass();
 Pass* createMemory64LoweringPass();
