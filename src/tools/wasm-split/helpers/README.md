@@ -10,7 +10,7 @@ This guide explains how to instrument WebAssembly modules using Binaryen's `wasm
 4. [Extracting Profile Data](#extracting-profile-data)
    - [Using Node.js](#using-nodejs)
    - [Using Wasmtime](#using-wasmtime)
-   - [Using Chicory (Python)](#using-chicory-python)
+   - [Using Chicory (Java)](#using-chicory-java)
    - [Using wasm-split Tool](#using-wasm-split-tool)
 5. [Helper Scripts](#helper-scripts)
 6. [Examples](#examples)
@@ -135,9 +135,9 @@ wasmtime run --invoke __write_profile instrumented.wasm 0 65536
 wasm-split instrumented.wasm --export-profile-json profile.json --profile profile.bin
 ```
 
-### Using Chicory (Python)
+### Using Chicory (Java)
 
-Chicory is a WebAssembly runtime for Python.
+Chicory is a WebAssembly runtime for Java.
 
 #### Method 1: Using the Helper Script
 
