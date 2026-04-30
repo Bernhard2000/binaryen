@@ -1,6 +1,6 @@
 # WASM Instrumentation and Profile Data Extraction Guide
 
-This guide explains how to instrument WebAssembly modules using Binaryen's `wasm-split` tool and extract profile data from different runtimes (Node.js, Wasmtime, Chicory, etc.).
+This guide explains how to instrument WebAssembly modules using Binaryen's `wasm-split` tool and extract profile data from different runtimes (Node.js, Wasmtime, etc.).
 
 ## Table of Contents
 
@@ -10,7 +10,6 @@ This guide explains how to instrument WebAssembly modules using Binaryen's `wasm
 4. [Extracting Profile Data](#extracting-profile-data)
    - [Using Node.js](#using-nodejs)
    - [Using Wasmtime](#using-wasmtime)
-   - [Using Chicory (Java)](#using-chicory-java)
    - [Using wasm-split Tool](#using-wasm-split-tool)
 5. [Helper Scripts](#helper-scripts)
 6. [Examples](#examples)
@@ -135,48 +134,6 @@ wasmtime run --invoke __write_profile instrumented.wasm 0 65536
 wasm-split instrumented.wasm --export-profile-json profile.json --profile profile.bin
 ```
 
-### Using Chicory (Java)
-
-Chicory is a WebAssembly runtime for Java.
-
-#### Method 1: Using the Helper Script
-
-```bash
-python helpers/get_profile_data_chicory.py instrumented.wasm profile.json
-```
-
-#### Method 2: Manual Extraction
-
-```python
-from chicory import Chicory
-import struct
-
-# Load the module
-engine = Chicory()
-module = engine.load_module(open('instrumented.wasm', 'rb').read())
-
-# Call __write_profile
-profile_size = module.exports.__write_profile(0, 65536)
-
-# Read profile data from memory
-memory = module.exports.memory
-profile_data = bytes(memory[0:profile_size])
-
-# Parse the data
-hash_low = struct.unpack_from('<I', profile_data, 0)[0]
-hash_high = struct.unpack_from('<I', profile_data, 4)[0]
-module_hash = (hash_high << 32) | hash_low
-
-timestamps = []
-offset = 8
-while offset < len(profile_data):
-    timestamps.append(struct.unpack_from('<I', profile_data, offset)[0])
-    offset += 4
-
-print(f"Module Hash: {module_hash:016x}")
-print(f"Timestamps: {timestamps}")
-```
-
 ### Using wasm-split Tool
 
 The `wasm-split` tool provides built-in functionality to export profile data as JSON.
@@ -205,7 +162,6 @@ This directory contains helper scripts for different runtimes:
 |--------|---------|-------|
 | `get_profile_data_nodejs.mjs` | Node.js | `node get_profile_data_nodejs.mjs <wasm> <json>` |
 | `get_profile_data_wasmtime.sh` | Wasmtime | `./get_profile_data_wasmtime.sh <wasm> <json>` |
-| `get_profile_data_chicory.py` | Chicory | `python get_profile_data_chicory.py <wasm> <json>` |
 
 All scripts:
 1. Load the instrumented WASM module
