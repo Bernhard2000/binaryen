@@ -73,6 +73,9 @@ std::ostream& operator<<(std::ostream& o, WasmSplitOptions::Mode& mode) {
     case WasmSplitOptions::Mode::PrintProfile:
       o << "print-profile";
       break;
+    case WasmSplitOptions::Mode::ExportProfileJson:
+      o << "export-profile-json";
+      break;
   }
   return o;
 }
@@ -128,12 +131,22 @@ WasmSplitOptions::WasmSplitOptions()
            mode = Mode::PrintProfile;
            profileFile = argument;
          })
+    .add("--export-profile-json",
+         "",
+         "Export profile data as JSON for easier consumption by different runtimes.",
+         WasmSplitOption,
+         {Mode::ExportProfileJson},
+         Options::Arguments::One,
+         [&](Options* o, const std::string& argument) {
+           mode = Mode::ExportProfileJson;
+           output = argument;
+         })
     .add(
       "--profile",
       "",
-      "The profile to use to guide splitting.",
+      "The profile to use to guide splitting or to export as JSON.",
       WasmSplitOption,
-      {Mode::Split},
+      {Mode::Split, Mode::ExportProfileJson},
       Options::Arguments::One,
       [&](Options* o, const std::string& argument) { profileFile = argument; })
     .add("--keep-funcs",
@@ -457,6 +470,7 @@ bool WasmSplitOptions::validate() {
       // Any number >= 1 allowed.
       break;
     case Mode::PrintProfile:
+    case Mode::ExportProfileJson:
       if (inputFiles.size() != 1) {
         fail("Must have exactly one profile path.");
       }

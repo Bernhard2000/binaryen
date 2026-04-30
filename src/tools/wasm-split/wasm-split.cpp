@@ -18,8 +18,11 @@
 // splitting.
 
 #include <fstream>
+#include <iomanip>
+#include <sstream>
 
 #include "ir/module-splitting.h"
+#include "ir/module-utils.h"
 #include "support/file.h"
 #include "support/name.h"
 #include "support/path.h"
@@ -169,6 +172,44 @@ ProfileData readProfile(const std::string& file) {
   }
 
   return {hash, timestamps};
+}
+
+// Write profile data as JSON to a file
+void writeProfileJson(const ProfileData& profile, Module& wasm, const std::string& filename) {
+  std::ofstream out(filename);
+  if (!out.is_open()) {
+    Fatal() << "error: could not open output file: " << filename;
+  }
+  
+  // Write JSON manually
+  out << "{\n";
+  out << "  \"version\": 1,\n";
+  out << "  \"type\": \"wasm-split-profile\",\n";
+  
+  // Add module hash as hex string
+  std::stringstream hashStream;
+  hashStream << std::hex << std::setw(16) << std::setfill('0') << profile.hash;
+  out << "  \"moduleHash\": \"" << hashStream.str() << "\",\n";
+  
+  // Add function information
+  out << "  \"functions\": [\n";
+  
+  size_t i = 0;
+  bool first = true;
+  ModuleUtils::iterDefinedFunctions(wasm, [&](Function* func) {
+    if (!first) {
+      out << ",\n";
+    }
+    first = false;
+    
+    out << "    {\n";
+    out << "      \"name\": \"" << func->name.toString() << "\",\n";
+    out << "      \"timestamp\": " << profile.timestamps[i++] << "\n";
+    out << "    }";
+  });
+  
+  out << "\n  ]\n";
+  out << "}\n";
 }
 
 void getFunctionsToKeepAndSplit(Module& wasm,
@@ -602,6 +643,26 @@ void printReadableProfile(const WasmSplitOptions& options) {
   std::cout << std::endl;
 }
 
+void exportProfileJson(const WasmSplitOptions& options) {
+  const std::string wasmFile(options.inputFiles[0]);
+  checkExists(options.profileFile);
+  checkExists(wasmFile);
+
+  Module wasm;
+  parseInput(wasm, options);
+
+  uint64_t hash = hashFile(wasmFile);
+  ProfileData profile = readProfile(options.profileFile);
+  
+  if (profile.hash != hash) {
+    Fatal() << "error: checksum in profile does not match module checksum. "
+            << "The module to export must be the original, uninstrumented "
+               "module, not the module used to generate the profile.";
+  }
+
+  writeProfileJson(profile, wasm, options.output);
+}
+
 } // anonymous namespace
 
 int main(int argc, const char* argv[]) {
@@ -629,6 +690,9 @@ int main(int argc, const char* argv[]) {
       break;
     case WasmSplitOptions::Mode::PrintProfile:
       printReadableProfile(options);
+      break;
+    case WasmSplitOptions::Mode::ExportProfileJson:
+      exportProfileJson(options);
       break;
   }
 }
