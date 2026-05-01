@@ -3,6 +3,7 @@ name: CI
 on:
   # If we run CI on all branches then we end up doing duplicate work for
   # branches which are also PRs.
+  workflow_dispatch:
   push:
     branches:
       - main
