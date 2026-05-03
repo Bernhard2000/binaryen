@@ -476,6 +476,11 @@ struct NullInstrParserCtx {
   Result<> makeBinary(Index, const std::vector<Annotation>&, BinaryOp) {
     return Ok{};
   }
+  Result<>
+  makeWideIntAddSub(Index, const std::vector<Annotation>&, WideIntAddSubOp) {
+    return Ok{};
+  }
+
   Result<> makeUnary(Index, const std::vector<Annotation>&, UnaryOp) {
     return Ok{};
   }
@@ -567,6 +572,11 @@ struct NullInstrParserCtx {
                      MemoryIdxT*,
                      MemargT,
                      MemoryOrder) {
+    return Ok{};
+  }
+  template<typename HeapTypeT>
+  Result<> makeArrayLoad(
+    Index, const std::vector<Annotation>&, Type, int, bool, HeapTypeT) {
     return Ok{};
   }
   template<typename HeapTypeT>
@@ -1069,6 +1079,8 @@ struct ParseDeclsCtx : NullTypeParserCtx, NullInstrParserCtx {
     recTypeDefs.push_back({{}, pos, Index(recTypeDefs.size()), {}});
   }
 
+  bool skipFunctionBody();
+
   Limits makeLimits(uint64_t n, std::optional<uint64_t> m) {
     return Limits{n, m};
   }
@@ -1125,8 +1137,12 @@ struct ParseDeclsCtx : NullTypeParserCtx, NullInstrParserCtx {
                               Name name,
                               ImportNames* importNames,
                               TableType limits);
-  Result<>
-  addTable(Name, const std::vector<Name>&, ImportNames*, TableType, Index);
+  Result<> addTable(Name,
+                    const std::vector<Name>&,
+                    ImportNames*,
+                    TableType,
+                    std::optional<ExprT>,
+                    Index);
 
   // TODO: Record index of implicit elem for use when parsing types and instrs.
   Result<> addImplicitElems(TypeT, ElemListT&& elems);
@@ -1517,8 +1533,12 @@ struct ParseModuleTypesCtx : TypeParserCtx<ParseModuleTypesCtx>,
     return Ok{};
   }
 
-  Result<> addTable(
-    Name, const std::vector<Name>&, ImportNames*, Type ttype, Index pos) {
+  Result<> addTable(Name,
+                    const std::vector<Name>&,
+                    ImportNames*,
+                    Type ttype,
+                    std::optional<ExprT> init,
+                    Index pos) {
     auto& t = wasm.tables[index];
     if (!ttype.isRef()) {
       return in.err(pos, "expected reference type");
@@ -1882,10 +1902,12 @@ struct ParseDefsCtx : TypeParserCtx<ParseDefsCtx>, AnnotationParserCtx {
     return Ok{};
   }
 
-  Result<>
-  addTable(Name, const std::vector<Name>&, ImportNames*, TableTypeT, Index) {
-    return Ok{};
-  }
+  Result<> addTable(Name,
+                    const std::vector<Name>&,
+                    ImportNames*,
+                    TableTypeT,
+                    std::optional<ExprT>,
+                    Index);
 
   Result<>
   addMemory(Name, const std::vector<Name>&, ImportNames*, TableTypeT, Index) {
@@ -1970,7 +1992,7 @@ struct ParseDefsCtx : TypeParserCtx<ParseDefsCtx>, AnnotationParserCtx {
   void setSrcLoc(const std::vector<Annotation>& annotations) {
     const Annotation* annotation = nullptr;
     for (auto& a : annotations) {
-      if (a.kind == srcAnnotationKind) {
+      if (a.kind.str == std::string_view("src")) {
         annotation = &a;
       }
     }
@@ -2140,6 +2162,12 @@ struct ParseDefsCtx : TypeParserCtx<ParseDefsCtx>, AnnotationParserCtx {
                       const std::vector<Annotation>& annotations,
                       BinaryOp op) {
     return withLoc(pos, irBuilder.makeBinary(op));
+  }
+
+  Result<> makeWideIntAddSub(Index pos,
+                             const std::vector<Annotation>& annotations,
+                             WideIntAddSubOp op) {
+    return withLoc(pos, irBuilder.makeWideIntAddSub(op));
   }
 
   Result<>
@@ -2329,6 +2357,16 @@ struct ParseDefsCtx : TypeParserCtx<ParseDefsCtx>, AnnotationParserCtx {
     }
     return withLoc(
       pos, irBuilder.makeStore(bytes, memarg.offset, memarg.align, type, *m));
+  }
+
+  Result<> makeArrayLoad(Index pos,
+                         const std::vector<Annotation>& annotations,
+                         Type type,
+                         int bytes,
+                         bool signed_,
+                         HeapTypeT arrayType) {
+    return withLoc(pos,
+                   irBuilder.makeArrayLoad(arrayType, bytes, signed_, type));
   }
 
   Result<> makeArrayStore(Index pos,

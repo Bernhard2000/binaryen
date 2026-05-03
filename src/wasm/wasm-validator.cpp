@@ -173,9 +173,9 @@ struct ValidationInfo {
     return true;
   }
 
-  template<typename T, typename S>
+  template<typename T>
   bool shouldBeEqualOrFirstIsUnreachable(
-    S left, S right, T curr, const char* text, Function* func = nullptr) {
+    Type left, Type right, T curr, const char* text, Function* func = nullptr) {
     if (left != Type::unreachable && left != right) {
       std::ostringstream ss;
       ss << left << " != " << right << ": " << text;
@@ -508,6 +508,7 @@ public:
   void visitMemoryCopy(MemoryCopy* curr);
   void visitMemoryFill(MemoryFill* curr);
   void visitBinary(Binary* curr);
+  void visitWideIntAddSub(WideIntAddSub* curr);
   void visitUnary(Unary* curr);
   void visitSelect(Select* curr);
   void visitDrop(Drop* curr);
@@ -555,6 +556,7 @@ public:
   void visitArrayNewFixed(ArrayNewFixed* curr);
   void visitArrayGet(ArrayGet* curr);
   void visitArraySet(ArraySet* curr);
+  void visitArrayLoad(ArrayLoad* curr);
   void visitArrayStore(ArrayStore* curr);
   void visitArrayLen(ArrayLen* curr);
   void visitArrayCopy(ArrayCopy* curr);
@@ -606,9 +608,11 @@ private:
     return info.shouldBeEqual(left, right, curr, text, getFunction());
   }
 
-  template<typename T, typename S>
-  bool
-  shouldBeEqualOrFirstIsUnreachable(S left, S right, T curr, const char* text) {
+  template<typename T>
+  bool shouldBeEqualOrFirstIsUnreachable(Type left,
+                                         Type right,
+                                         T curr,
+                                         const char* text) {
     return info.shouldBeEqualOrFirstIsUnreachable(
       left, right, curr, text, getFunction());
   }
@@ -2379,6 +2383,9 @@ void FunctionValidator::visitUnary(Unary* curr) {
     case TruncSatZeroUVecF64x2ToVecI32x4:
     case DemoteZeroVecF64x2ToVecF32x4:
     case PromoteLowVecF32x4ToVecF64x2:
+    case PromoteLowVecF16x8ToVecF32x4:
+    case DemoteZeroVecF32x4ToVecF16x8:
+    case DemoteZeroVecF64x2ToVecF16x8:
     case RelaxedTruncSVecF32x4ToVecI32x4:
     case RelaxedTruncUVecF32x4ToVecI32x4:
     case RelaxedTruncZeroSVecF64x2ToVecI32x4:
@@ -2436,6 +2443,21 @@ void FunctionValidator::visitSelect(Select* curr) {
     shouldBeTrue(Type::isSubType(curr->ifFalse->type, curr->type),
                  curr,
                  "select's right expression must be subtype of select's type");
+  }
+}
+
+void FunctionValidator::visitWideIntAddSub(WideIntAddSub* curr) {
+  shouldBeTrue(getModule()->features.hasWideArithmetic(),
+               curr,
+               "i64.add128 / i64.sub128 require wide arithmetic "
+               "[--enable-wide-arithmetic]");
+
+  for (auto* operand :
+       {curr->leftLow, curr->leftHigh, curr->rightLow, curr->rightHigh}) {
+    shouldBeEqualOrFirstIsUnreachable(operand->type,
+                                      Type(Type::i64),
+                                      curr,
+                                      "wide binary child types must be i64");
   }
 }
 
@@ -2767,14 +2789,14 @@ void FunctionValidator::visitElemDrop(ElemDrop* curr) {
 
 void FunctionValidator::noteDelegate(Name name, Expression* curr) {
   if (name != DELEGATE_CALLER_TARGET) {
-    shouldBeTrue(delegateTargetNames.count(name) != 0,
+    shouldBeTrue(delegateTargetNames.contains(name),
                  curr,
                  "all delegate targets must be valid");
   }
 }
 
 void FunctionValidator::noteRethrow(Name name, Expression* curr) {
-  shouldBeTrue(rethrowTargetNames.count(name) != 0,
+  shouldBeTrue(rethrowTargetNames.contains(name),
                curr,
                "all rethrow targets must be valid");
 }
@@ -3573,6 +3595,10 @@ void FunctionValidator::visitStructCmpxchg(StructCmpxchg* curr) {
   } else if (field.type.isRef()) {
     expectedExpectedType = Type(
       HeapTypes::eq.getBasic(field.type.getHeapType().getShared()), Nullable);
+    shouldBeSubType(field.type,
+                    expectedExpectedType,
+                    curr,
+                    "struct.atomic.rmw field type invalid for operation");
   } else {
     shouldBeTrue(
       false, curr, "struct.atomic.rmw field type invalid for operation");
@@ -3815,6 +3841,31 @@ void FunctionValidator::visitArraySet(ArraySet* curr) {
                   curr,
                   "array.set must have the proper type");
   shouldBeTrue(element.mutable_, curr, "array.set type must be mutable");
+}
+
+void FunctionValidator::visitArrayLoad(ArrayLoad* curr) {
+  shouldBeTrue(getModule()->features.hasMultibyte(),
+               curr,
+               "array.load requires multibyte [--enable-multibyte]");
+  shouldBeEqualOrFirstIsUnreachable(curr->index->type,
+                                    Type(Type::i32),
+                                    curr,
+                                    "array load index must be an i32");
+  if (curr->type == Type::unreachable) {
+    return;
+  }
+  const char* mustBeArray = "array load target should be an array reference";
+  if (curr->type == Type::unreachable ||
+      !shouldBeTrue(curr->ref->type.isRef(), curr, mustBeArray) ||
+      curr->ref->type.getHeapType().isBottom() ||
+      !shouldBeTrue(curr->ref->type.isArray(), curr, mustBeArray)) {
+    return;
+  }
+
+  auto heapType = curr->ref->type.getHeapType();
+  const auto& element = heapType.getArray().element;
+  shouldBeTrue(
+    element.packedType == Field::i8, curr, "array load type must be i8");
 }
 
 void FunctionValidator::visitArrayStore(ArrayStore* curr) {
@@ -4101,6 +4152,10 @@ void FunctionValidator::visitArrayCmpxchg(ArrayCmpxchg* curr) {
   } else if (element.type.isRef()) {
     expectedExpectedType = Type(
       HeapTypes::eq.getBasic(element.type.getHeapType().getShared()), Nullable);
+    shouldBeSubType(element.type,
+                    expectedExpectedType,
+                    curr,
+                    "array.atomic.rmw element type invalid for operation");
   } else {
     shouldBeTrue(
       false, curr, "array.atomic.rmw element type invalid for operation");
@@ -4421,7 +4476,7 @@ void FunctionValidator::validateResumeHandlers(
       // But we cannot check this here because we do not know what type the
       // block named $label expects. Save the tag to check when we visit the
       // block later.
-      if (!shouldBeTrue(breakTypes.count(labels[i]) != 0,
+      if (!shouldBeTrue(breakTypes.contains(labels[i]),
                         curr,
                         "all resume targets must be valid")) {
         return;
@@ -4510,6 +4565,28 @@ void FunctionValidator::visitResumeThrow(ResumeThrow* curr) {
     return;
   }
 
+  if (curr->cont->type == Type::unreachable) {
+    return;
+  }
+
+  if (!shouldBeTrue(curr->cont->type.isRef(),
+                    curr,
+                    "resume_throw continuation must be a reference")) {
+    return;
+  }
+
+  auto type = curr->cont->type.getHeapType();
+  if (type.isMaybeShared(HeapType::nocont)) {
+    return;
+  }
+
+  if (!shouldBeTrue(
+        type.isContinuation(),
+        curr,
+        "resume_throw continuation must have a defined continuation type")) {
+    return;
+  }
+
   if (curr->tag) {
     // Normal resume_throw
     auto* tag = getModule()->getTagOrNull(curr->tag);
@@ -4549,28 +4626,6 @@ void FunctionValidator::visitResumeThrow(ResumeThrow* curr) {
                       curr,
                       "resume_throw_ref must receive exnref");
     }
-  }
-
-  if (curr->cont->type == Type::unreachable) {
-    return;
-  }
-
-  if (!shouldBeTrue(curr->cont->type.isRef(),
-                    curr,
-                    "resume_throw continuation must be a reference")) {
-    return;
-  }
-
-  auto type = curr->cont->type.getHeapType();
-  if (type.isMaybeShared(HeapType::nocont)) {
-    return;
-  }
-
-  if (!shouldBeTrue(
-        type.isContinuation(),
-        curr,
-        "resume_throw continuation must have a defined continuation type")) {
-    return;
   }
 
   auto sig = type.getContinuation().type.getSignature();
@@ -4963,7 +5018,7 @@ void validateExports(Module& module, ValidationInfo& info) {
       WASM_UNREACHABLE("invalid ExternalKind");
     }
     Name exportName = exp->name;
-    info.shouldBeFalse(exportNames.count(exportName) > 0,
+    info.shouldBeFalse(exportNames.contains(exportName),
                        exportName,
                        "module exports must be unique");
     exportNames.insert(exportName);
@@ -4997,7 +5052,7 @@ void validateGlobals(Module& module, ValidationInfo& info) {
       for (auto* get : FindAll<GlobalGet>(curr->init).list) {
         auto* global = module.getGlobalOrNull(get->name);
         info.shouldBeTrue(
-          global && (seen.count(global) || global->imported()),
+          global && (seen.contains(global) || global->imported()),
           curr->init,
           "global initializer should only refer to previous globals");
       }
@@ -5139,10 +5194,42 @@ void validateTables(Module& module, ValidationInfo& info) {
     info.shouldBeTrue(table->initial <= table->max,
                       "table",
                       "size minimum must not be greater than maximum");
-    info.shouldBeTrue(
-      table->type.isNullable(),
-      "table",
-      "Non-nullable reference types are not yet supported for tables");
+    if (table->type.isNonNullable()) {
+      info.shouldBeTrue(module.features.hasGC(),
+                        "table",
+                        "tables must have a nullable type in MVP "
+                        "(requires --enable-gc).");
+    }
+    if (!table->imported() && table->type.isNonNullable()) {
+      info.shouldBeTrue(table->init,
+                        "table",
+                        "module-defined tables with non-nullable types require "
+                        "an initializer expression");
+    }
+    if (table->init) {
+      info.shouldBeTrue(module.features.hasGC(),
+                        "table",
+                        "tables cannot have an initializer expression in MVP "
+                        "(requires --enable-gc).");
+      info.shouldBeSubType(
+        table->init->type,
+        table->type,
+        table->init,
+        "init expression must be a subtype of the table type");
+      info.shouldBeTrue(
+        Properties::isValidConstantExpression(module, table->init),
+        "table",
+        "table initializer value must be constant");
+      validator.validate(table->init);
+      // Check that no module-defined globals are referenced.
+      for (auto* get : FindAll<GlobalGet>(table->init).list) {
+        auto* global = module.getGlobalOrNull(get->name);
+        info.shouldBeTrue(
+          global && global->imported(),
+          table->init,
+          "table initializer may not refer to module-defined globals");
+      }
+    }
     auto typeFeats = table->type.getFeatures();
     if (!info.shouldBeTrue(table->type == funcref ||
                              typeFeats.isSubsetOf(module.features),
@@ -5162,10 +5249,6 @@ void validateTables(Module& module, ValidationInfo& info) {
     info.shouldBeTrue(segment->type.isRef(),
                       "elem",
                       "element segment type must be of reference type.");
-    info.shouldBeTrue(
-      segment->type.isNullable(),
-      "elem",
-      "Non-nullable reference types are not yet supported for tables");
     auto typeFeats = segment->type.getFeatures();
     if (!info.shouldBeTrue(
           segment->type == funcref || typeFeats.isSubsetOf(module.features),

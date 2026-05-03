@@ -144,7 +144,7 @@ public:
   }
 
   Literal getImportedFunction(Function* import) override {
-    if (linkedInstances.count(import->module)) {
+    if (linkedInstances.contains(import->module)) {
       return getImportInstance(import)->getExportedFunction(import->base);
     }
     auto f = [import, this](const Literals& arguments) -> Flow {
@@ -180,6 +180,9 @@ public:
             }
           }
           std::cout << "]\n";
+          if (import->base == "log-branch") {
+            return arguments[0];
+          }
           return {};
         } else if (import->base == "throw") {
           // Throw something, depending on the value of the argument. 0 means
@@ -373,7 +376,7 @@ class FuzzerImportResolver
 
   // We can synthesize imported externref globals. Use a deque for stable
   // addresses.
-  mutable std::deque<Literals> synthesizedGlobals;
+  mutable std::deque<RuntimeGlobal> synthesizedGlobals;
 
   Tag* getTagOrNull(ImportNames name, const Signature& type) const override {
     if (name.module == "fuzzing-support") {
@@ -388,7 +391,7 @@ class FuzzerImportResolver
     return LinkedInstancesImportResolver::getTagOrNull(name, type);
   }
 
-  virtual Literals*
+  virtual RuntimeGlobal*
   getGlobalOrNull(ImportNames name, Type type, bool mut) const override {
     // First look for globals available from linked instances.
     if (auto* global =
@@ -413,7 +416,10 @@ class FuzzerImportResolver
         payload = (payload + static_cast<Index>(c)) % 251;
       }
     }
+
     synthesizedGlobals.emplace_back(
+      type,
+      mut ? Mutable : Immutable,
       Literals{Literal::makeExtern(payload, Unshared)});
     return &synthesizedGlobals.back();
   }
@@ -515,11 +521,11 @@ struct ExecutionResults {
       } else if (exp->kind == ExternalKind::Global) {
         // Log the global's value.
         std::cout << "[fuzz-exec] export " << exp->name << "\n";
-        Literals* value = instance.getExportedGlobalOrNull(exp->name);
-        assert(value);
-        assert(value->size() == 1);
+        RuntimeGlobal* global = instance.getExportedGlobalOrNull(exp->name);
+        assert(global);
+        assert(global->literals.size() == 1);
         std::cout << "[LoggingExternalInterface logging ";
-        printValue((*value)[0]);
+        printValue(global->literals[0]);
         std::cout << "]\n";
       }
       // Ignore other exports for now. TODO

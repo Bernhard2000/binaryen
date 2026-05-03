@@ -647,6 +647,14 @@ HeapType getMutI16Array();
 
 } // namespace HeapTypes
 
+namespace Types {
+
+// Certain Types are used by standard operations. Provide central accessors
+// for them to avoid having to build them everywhere they are used.
+Type getI64Pair();
+
+} // namespace Types
+
 // A recursion group consisting of one or more HeapTypes. HeapTypes with single
 // members are encoded without using any additional memory, which is why
 // `getHeapTypes` has to return a vector by value; it might have to create one
@@ -764,7 +772,7 @@ struct Array {
 
 // TypeBuilder - allows for the construction of recursive types. Contains a
 // table of `n` mutable HeapTypes and can construct temporary types that are
-// backed by those HeapTypes, refering to them by reference. Those temporary
+// backed by those HeapTypes, referring to them by reference. Those temporary
 // types are owned by the TypeBuilder and should only be used in the
 // construction of HeapTypes to insert into the TypeBuilder. Temporary types
 // should never be used in the construction of normal Types, only other
@@ -894,7 +902,7 @@ struct TypeBuilder {
   void setOpen(size_t i, bool open = true);
   void setShared(size_t i, Shareability share = Shared);
 
-  enum class ErrorReason {
+  enum class ErrorReasonKind {
     // There is a cycle in the supertype relation.
     SelfSupertype,
     // The declared supertype of a type is invalid.
@@ -917,6 +925,8 @@ struct TypeBuilder {
     NonStructDescribes,
     // The described type is an invalid forward reference.
     ForwardDescribesReference,
+    // The descriptor type is an invalid forward reference.
+    ForwardDescriptorReference,
     // The described type does not have this type as a descriptor.
     MismatchedDescribes,
     // A descriptor clause on a non-struct type.
@@ -932,6 +942,27 @@ struct TypeBuilder {
     // Two rec groups with different shapes would have the same shapes after
     // the binary writer generalizes refined types that use disabled features.
     RecGroupCollision,
+  };
+
+  struct RecGroupCollision {
+    FeatureSet missingFeatures;
+    bool operator==(const RecGroupCollision& other) const {
+      return missingFeatures == other.missingFeatures;
+    }
+  };
+
+  struct ErrorReason : std::variant<ErrorReasonKind, RecGroupCollision> {
+    using variant::variant;
+
+    ErrorReasonKind getKind() const {
+      if (auto* kind = std::get_if<ErrorReasonKind>(this)) {
+        return *kind;
+      }
+      return ErrorReasonKind::RecGroupCollision;
+    }
+
+    bool operator==(ErrorReasonKind kind) const { return getKind() == kind; }
+    bool operator!=(ErrorReasonKind kind) const { return getKind() != kind; }
   };
 
   struct Error {
@@ -1082,7 +1113,7 @@ std::ostream& operator<<(std::ostream&, Continuation);
 std::ostream& operator<<(std::ostream&, Field);
 std::ostream& operator<<(std::ostream&, Struct);
 std::ostream& operator<<(std::ostream&, Array);
-std::ostream& operator<<(std::ostream&, TypeBuilder::ErrorReason);
+std::ostream& operator<<(std::ostream&, const TypeBuilder::ErrorReason&);
 
 // Inline some nontrivial methods here for performance reasons.
 

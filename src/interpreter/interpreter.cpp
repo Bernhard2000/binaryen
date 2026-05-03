@@ -216,6 +216,7 @@ struct ExpressionInterpreter : OverriddenVisitor<ExpressionInterpreter, Flow> {
         WASM_UNREACHABLE("TODO");
     }
   }
+  Flow visitWideIntAddSub(WideIntAddSub* curr) { WASM_UNREACHABLE("TODO"); }
   Flow visitSelect(Select* curr) { WASM_UNREACHABLE("TODO"); }
   Flow visitDrop(Drop* curr) { WASM_UNREACHABLE("TODO"); }
   Flow visitReturn(Return* curr) { WASM_UNREACHABLE("TODO"); }
@@ -262,6 +263,7 @@ struct ExpressionInterpreter : OverriddenVisitor<ExpressionInterpreter, Flow> {
   Flow visitArrayNewFixed(ArrayNewFixed* curr) { WASM_UNREACHABLE("TODO"); }
   Flow visitArrayGet(ArrayGet* curr) { WASM_UNREACHABLE("TODO"); }
   Flow visitArraySet(ArraySet* curr) { WASM_UNREACHABLE("TODO"); }
+  Flow visitArrayLoad(ArrayLoad* curr) { WASM_UNREACHABLE("TODO"); }
   Flow visitArrayStore(ArrayStore* curr) { WASM_UNREACHABLE("TODO"); }
   Flow visitArrayLen(ArrayLen* curr) { WASM_UNREACHABLE("TODO"); }
   Flow visitArrayCopy(ArrayCopy* curr) { WASM_UNREACHABLE("TODO"); }

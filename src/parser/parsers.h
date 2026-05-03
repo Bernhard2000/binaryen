@@ -91,6 +91,11 @@ Result<> makeNop(Ctx&, Index, const std::vector<Annotation>&);
 template<typename Ctx>
 Result<> makeBinary(Ctx&, Index, const std::vector<Annotation>&, BinaryOp op);
 template<typename Ctx>
+Result<> makeWideIntAddSub(Ctx&,
+                           Index,
+                           const std::vector<Annotation>&,
+                           WideIntAddSubOp op);
+template<typename Ctx>
 Result<> makeUnary(Ctx&, Index, const std::vector<Annotation>&, UnaryOp op);
 template<typename Ctx>
 Result<> makeSelect(Ctx&, Index, const std::vector<Annotation>&);
@@ -1340,7 +1345,7 @@ loop(Ctx& ctx, const std::vector<Annotation>& annotations, bool folded) {
 //            | '(' 'try' label blocktype '(' 'do' instr* ')'
 //                  ('(' 'catch' tagidx instr* ')')*
 //                  ('(' 'catch_all' instr* ')')? ')'
-//            | 'try' label blocktype instr* 'deledate' label
+//            | 'try' label blocktype instr* 'delegate' label
 //            | '(' 'try' label blocktype '(' 'do' instr* ')'
 //                '(' 'delegate' label ')' ')'
 template<typename Ctx>
@@ -1593,6 +1598,14 @@ Result<> makeBinary(Ctx& ctx,
 }
 
 template<typename Ctx>
+Result<> makeWideIntAddSub(Ctx& ctx,
+                           Index pos,
+                           const std::vector<Annotation>& annotations,
+                           WideIntAddSubOp op) {
+  return ctx.makeWideIntAddSub(pos, annotations, op);
+}
+
+template<typename Ctx>
 Result<> makeUnary(Ctx& ctx,
                    Index pos,
                    const std::vector<Annotation>& annotations,
@@ -1782,6 +1795,18 @@ Result<> makeLoad(Ctx& ctx,
                   bool signed_,
                   int bytes,
                   bool isAtomic) {
+
+  if (ctx.in.takeSExprStart("type"sv)) {
+    auto arrayType = typeidx(ctx);
+    CHECK_ERR(arrayType);
+
+    if (!ctx.in.takeRParen()) {
+      return ctx.in.err("expected end of type use");
+    }
+
+    return ctx.makeArrayLoad(
+      pos, annotations, type, bytes, signed_, *arrayType);
+  }
 
   auto mem = maybeMemidx(ctx);
   CHECK_ERR(mem);
@@ -3421,7 +3446,8 @@ template<typename Ctx> MaybeResult<> import_(Ctx& ctx) {
     auto name = ctx.in.takeID();
     auto type = tabletype(ctx);
     CHECK_ERR(type);
-    CHECK_ERR(ctx.addTable(name ? *name : Name{}, {}, &names, *type, pos));
+    CHECK_ERR(ctx.addTable(
+      name ? *name : Name{}, {}, &names, *type, std::nullopt, pos));
   } else if (ctx.in.takeSExprStart("memory"sv)) {
     auto name = ctx.in.takeID();
     auto type = memtype(ctx);
@@ -3478,6 +3504,7 @@ template<typename Ctx> MaybeResult<> func(Ctx& ctx) {
   typename Ctx::TypeUseT type;
   Exactness exact = Exact;
   std::optional<typename Ctx::LocalsT> localVars;
+  bool skipped = false;
 
   if (import) {
     auto use = exacttypeuse(ctx);
@@ -3492,13 +3519,14 @@ template<typename Ctx> MaybeResult<> func(Ctx& ctx) {
       CHECK_ERR(l);
       localVars = *l;
     }
-    if (!ctx.skipFunctionBody()) {
+    skipped = ctx.skipFunctionBody();
+    if (!skipped) {
       CHECK_ERR(instrs(ctx));
       ctx.setSrcLoc(ctx.in.takeAnnotations());
     }
   }
 
-  if (!ctx.skipFunctionBody() && !ctx.in.takeRParen()) {
+  if ((import || !skipped) && !ctx.in.takeRParen()) {
     return ctx.in.err("expected end of function");
   }
 
@@ -3514,7 +3542,11 @@ template<typename Ctx> MaybeResult<> func(Ctx& ctx) {
 }
 
 // table ::= '(' 'table' id? ('(' 'export' name ')')*
-//               '(' 'import' mod:name nm:name ')'? index_type? tabletype ')'
+//               index_type? tabletype expr?
+//               ')'
+//         | '(' 'table' id? ('(' 'export' name ')')*
+//               '(' 'import' mod:name nm:name ')' index_type? tabletype
+//               ')'
 //         | '(' 'table' id? ('(' 'export' name ')')* index_type?
 //               reftype '(' 'elem' (elemexpr* | funcidx*) ')' ')'
 template<typename Ctx> MaybeResult<> table(Ctx& ctx) {
@@ -3547,6 +3579,7 @@ template<typename Ctx> MaybeResult<> table(Ctx& ctx) {
 
   std::optional<typename Ctx::TableTypeT> ttype;
   std::optional<typename Ctx::ElemListT> elems;
+  std::optional<typename Ctx::ExprT> init;
   if (type) {
     // We should have inline elements.
     if (!ctx.in.takeSExprStart("elem"sv)) {
@@ -3581,13 +3614,19 @@ template<typename Ctx> MaybeResult<> table(Ctx& ctx) {
     auto tabtype = tabletypeContinued(ctx, addressType);
     CHECK_ERR(tabtype);
     ttype = *tabtype;
+    if (ctx.in.peekLParen() && !import) {
+      // Imported tables cannot have initialization expression.
+      auto e = expr(ctx);
+      CHECK_ERR(e);
+      init = *e;
+    }
   }
 
   if (!ctx.in.takeRParen()) {
     return ctx.in.err("expected end of table declaration");
   }
 
-  CHECK_ERR(ctx.addTable(name, *exports, import.getPtr(), *ttype, pos));
+  CHECK_ERR(ctx.addTable(name, *exports, import.getPtr(), *ttype, init, pos));
 
   if (elems) {
     CHECK_ERR(ctx.addImplicitElems(*type, std::move(*elems)));

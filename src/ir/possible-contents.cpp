@@ -634,6 +634,7 @@ struct InfoCollector
     addRoot(curr);
   }
   void visitBinary(Binary* curr) { addRoot(curr); }
+  void visitWideIntAddSub(WideIntAddSub* curr) { addRoot(curr); }
   void visitSelect(Select* curr) {
     receiveChildValue(curr->ifTrue, curr);
     receiveChildValue(curr->ifFalse, curr);
@@ -876,6 +877,12 @@ struct InfoCollector
           targetType, [&](HeapType subType, Index depth) {
             info.links.push_back({SignatureResultLocation{subType, i},
                                   ExpressionLocation{curr, i}});
+            if (curr->isReturn) {
+              // Send the result to the function's results as well.
+              info.links.push_back({SignatureResultLocation{subType, i},
+                                    ResultLocation{getFunction(), i}});
+            }
+            return true;
           });
       }
     }
@@ -934,7 +941,7 @@ struct InfoCollector
     // If this goes to a public table, then we must root the output, as the
     // table could contain anything at all, and calling functions there could
     // return anything at all.
-    if (shared.publicTables.count(curr->table)) {
+    if (shared.publicTables.contains(curr->table)) {
       addRoot(curr);
     }
     // TODO: the table identity could also be used here in more ways
@@ -1104,6 +1111,13 @@ struct InfoCollector
     }
     addChildParentLink(curr->ref, curr);
     addChildParentLink(curr->value, curr);
+  }
+  void visitArrayLoad(ArrayLoad* curr) {
+    if (!isRelevant(curr->ref)) {
+      addRoot(curr);
+      return;
+    }
+    addChildParentLink(curr->ref, curr);
   }
   void visitArrayStore(ArrayStore* curr) {
     if (curr->ref->type == Type::unreachable) {
@@ -1724,8 +1738,8 @@ void TNHOracle::scan(Function* func,
         // not important in optimized code, as the most refined cast would be
         // the only one to exist there, so it's ok to keep things simple here.
         if (getFunction()->isParam(get->index) && type != get->type &&
-            info.castParams.count(get->index) == 0 &&
-            !writtenParams.count(get->index)) {
+            !info.castParams.contains(get->index) &&
+            !writtenParams.contains(get->index)) {
           info.castParams[get->index] = type;
         }
       }
@@ -1755,6 +1769,7 @@ void TNHOracle::scan(Function* func,
     }
     void visitArrayGet(ArrayGet* curr) { notePossibleTrap(curr->ref); }
     void visitArraySet(ArraySet* curr) { notePossibleTrap(curr->ref); }
+    void visitArrayLoad(ArrayLoad* curr) { notePossibleTrap(curr->ref); }
     void visitArrayStore(ArrayStore* curr) { notePossibleTrap(curr->ref); }
     void visitArrayLen(ArrayLen* curr) { notePossibleTrap(curr->ref); }
     void visitArrayCopy(ArrayCopy* curr) {
@@ -2865,6 +2880,9 @@ void Flower::flowAfterUpdate(LocationIndex locationIndex) {
     } else if (auto* set = parent->dynCast<ArraySet>()) {
       assert(set->ref == child || set->value == child);
       writeToData(set->ref, set->value, 0);
+    } else if (auto* load = parent->dynCast<ArrayLoad>()) {
+      assert(load->ref == child);
+      readFromData(load->ref->type, 0, contents, load);
     } else if (auto* store = parent->dynCast<ArrayStore>()) {
       assert(store->ref == child || store->value == child);
       // TODO: model the stored value, and handle different but equal values in
@@ -2924,7 +2942,7 @@ void Flower::flowToTargetsAfterUpdate(LocationIndex locationIndex,
 void Flower::connectDuringFlow(Location from, Location to) {
   auto newLink = LocationLink{from, to};
   auto newIndexLink = getIndexes(newLink);
-  if (links.count(newIndexLink) == 0) {
+  if (!links.contains(newIndexLink)) {
     // This is a new link. Add it to the known links.
     links.insert(newIndexLink);
 
@@ -2965,6 +2983,17 @@ void Flower::filterExpressionContents(PossibleContents& contents,
   std::cout << "TNHOracle informs us that " << *exprLoc.expr << " contains "
             << maximalContents << "\n";
 #endif
+
+  if (exprLoc.expr->is<ArrayLoad>()) {
+    // ArrayLoad cannot filter, as we can have writes of different sizes than
+    // the type of the location (e.g. write i32, do an i64.load). If there is
+    // any content, just report the maximal content, basically like a Memory.
+    if (!contents.isNone()) {
+      contents = maximalContents;
+    }
+    return;
+  }
+
   contents.intersect(maximalContents);
   if (contents.isNone()) {
     // Nothing was left here at all.
@@ -3108,6 +3137,7 @@ void Flower::filterPackedDataReads(PossibleContents& contents,
   auto signed_ = false;
   Expression* ref;
   Index index;
+  unsigned bytes = 0;
   if (auto* get = expr->dynCast<StructGet>()) {
     signed_ = get->signed_;
     ref = get->ref;
@@ -3117,10 +3147,21 @@ void Flower::filterPackedDataReads(PossibleContents& contents,
     ref = get->ref;
     // Arrays are treated as having a single field.
     index = 0;
+  } else if (auto* load = expr->dynCast<ArrayLoad>()) {
+    signed_ = load->signed_;
+    ref = load->ref;
+    index = 0;
+    bytes = load->bytes;
   } else {
     WASM_UNREACHABLE("bad packed read");
   }
   if (!signed_) {
+    return;
+  }
+
+  Type resultType = expr->type;
+  if (resultType == Type::unreachable) {
+    // This read never executes.
     return;
   }
 
@@ -3135,13 +3176,21 @@ void Flower::filterPackedDataReads(PossibleContents& contents,
   assert(ref->type.isRef());
   auto field = GCTypeUtils::getField(ref->type.getHeapType(), index);
   assert(field);
-  if (!field->isPacked()) {
-    return;
+  if (!bytes) {
+    if (!field->isPacked()) {
+      return;
+    }
+    bytes = field->getByteSize();
   }
 
   if (contents.isLiteral()) {
     // This is a constant. We can sign-extend it and use that value.
-    auto shifts = Literal(int32_t(32 - field->getByteSize() * 8));
+    unsigned bits = resultType.getByteSize() == 8 ? 64 : 32;
+    if (bits <= bytes * 8) {
+      // No need to sign-extend for full size.
+      return;
+    }
+    auto shifts = Literal(int32_t(bits - bytes * 8));
     auto lit = contents.getLiteral();
     lit = lit.shl(shifts);
     lit = lit.shrS(shifts);
@@ -3235,6 +3284,7 @@ void Flower::readFromData(Type declaredType,
                            [&](HeapType type, Index depth) {
                              connectDuringFlow(DataLocation{type, fieldIndex},
                                                coneReadLocation);
+                             return true;
                            });
 
     // TODO: we can end up with redundant links here if we see one cone first
@@ -3304,6 +3354,7 @@ void Flower::writeToData(Expression* ref,
     cone.type.getHeapType(), normalizedDepth, [&](HeapType type, Index depth) {
       auto heapLoc = DataLocation{type, fieldIndex};
       updateContents(heapLoc, valueContents);
+      return true;
     });
 }
 
@@ -3314,7 +3365,7 @@ void Flower::dump(Location location) {
               << *loc->expr << " : " << loc->tupleIndex << '\n';
   } else if (auto* loc = std::get_if<DataLocation>(&location)) {
     std::cout << "  dataloc ";
-    if (wasm.typeNames.count(loc->type)) {
+    if (wasm.typeNames.contains(loc->type)) {
       std::cout << '$' << wasm.typeNames[loc->type].name;
     } else {
       std::cout << loc->type << '\n';

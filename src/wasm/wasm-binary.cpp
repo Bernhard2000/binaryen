@@ -789,12 +789,20 @@ void WasmBinaryWriter::writeTableDeclarations() {
   auto num = importInfo->getNumDefinedTables();
   o << U32LEB(num);
   ModuleUtils::iterDefinedTables(*wasm, [&](Table* table) {
+    if (table->init) {
+      o << uint8_t(BinaryConsts::HasTableInitializer);
+      o << uint8_t(BinaryConsts::TableReservedByte);
+    }
     writeType(table->type);
     writeResizableLimits(table->initial,
                          table->max,
                          table->hasMax(),
                          /*shared=*/false,
                          table->is64());
+    if (table->init) {
+      writeExpression(table->init);
+      o << uint8_t(BinaryConsts::End);
+    }
   });
   finishSection(start);
 }
@@ -1011,7 +1019,7 @@ void WasmBinaryWriter::writeNames() {
   {
     std::vector<HeapType> namedTypes;
     for (auto type : indexedTypes.types) {
-      if (wasm->typeNames.count(type) && wasm->typeNames[type].name.is()) {
+      if (wasm->typeNames.contains(type) && wasm->typeNames[type].name.is()) {
         namedTypes.push_back(type);
       }
     }
@@ -1162,7 +1170,7 @@ void WasmBinaryWriter::writeNames() {
   if (wasm->features.hasGC()) {
     std::vector<HeapType> relevantTypes;
     for (auto& type : indexedTypes.types) {
-      if (type.isStruct() && wasm->typeNames.count(type) &&
+      if (type.isStruct() && wasm->typeNames.contains(type) &&
           !wasm->typeNames[type].fieldNames.empty()) {
         relevantTypes.push_back(type);
       }
@@ -1478,6 +1486,8 @@ void WasmBinaryWriter::writeFeaturesSection() {
         return BinaryConsts::CustomSections::RelaxedAtomicsFeature;
       case FeatureSet::CustomPageSizes:
         return BinaryConsts::CustomSections::CustomPageSizesFeature;
+      case FeatureSet::WideArithmetic:
+        return BinaryConsts::CustomSections::WideArithmeticFeature;
       case FeatureSet::None:
       case FeatureSet::Default:
       case FeatureSet::All:
@@ -1605,7 +1615,7 @@ void WasmBinaryWriter::trackExpressionStart(Expression* curr, Function* func) {
   // track locations of instructions that have code annotations, as their binary
   // location goes in the custom section.
   if (func && (!func->expressionLocations.empty() ||
-               func->codeAnnotations.count(curr))) {
+               func->codeAnnotations.contains(curr))) {
     binaryLocations.expressions[curr] =
       BinaryLocations::Span{BinaryLocation(o.size()), 0};
     binaryLocationTrackedExpressionsForFunc.push_back(curr);
@@ -2281,6 +2291,13 @@ std::string_view WasmBinaryReader::getByteView(size_t size) {
   }
   pos += size;
   return {input.data() + (pos - size), size};
+}
+
+uint8_t WasmBinaryReader::peekInt8() {
+  if (!more()) {
+    throwError("unexpected end of input");
+  }
+  return input[pos];
 }
 
 uint8_t WasmBinaryReader::getInt8() {
@@ -3288,6 +3305,15 @@ void WasmBinaryReader::readVars() {
   }
 }
 
+Result<> WasmBinaryReader::readLoad(unsigned bytes, bool signed_, Type type) {
+  auto [mem, align, offset, backing] = getMemarg();
+  if (backing == BackingType::Array) {
+    HeapType arrayType = getIndexedHeapType();
+    return builder.makeArrayLoad(arrayType, bytes, signed_, type);
+  }
+  return builder.makeLoad(bytes, signed_, offset, align, type, mem);
+}
+
 Result<> WasmBinaryReader::readStore(unsigned bytes, Type type) {
   auto [mem, align, offset, backing] = getMemarg();
   if (backing == BackingType::Array) {
@@ -3635,62 +3661,34 @@ Result<> WasmBinaryReader::readInst() {
       return builder.makeConst(getFloat32Literal());
     case BinaryConsts::F64Const:
       return builder.makeConst(getFloat64Literal());
-    case BinaryConsts::I32LoadMem8S: {
-      auto [mem, align, offset, backing] = getMemarg();
-      return builder.makeLoad(1, true, offset, align, Type::i32, mem);
-    }
-    case BinaryConsts::I32LoadMem8U: {
-      auto [mem, align, offset, backing] = getMemarg();
-      return builder.makeLoad(1, false, offset, align, Type::i32, mem);
-    }
-    case BinaryConsts::I32LoadMem16S: {
-      auto [mem, align, offset, backing] = getMemarg();
-      return builder.makeLoad(2, true, offset, align, Type::i32, mem);
-    }
-    case BinaryConsts::I32LoadMem16U: {
-      auto [mem, align, offset, backing] = getMemarg();
-      return builder.makeLoad(2, false, offset, align, Type::i32, mem);
-    }
-    case BinaryConsts::I32LoadMem: {
-      auto [mem, align, offset, backing] = getMemarg();
-      return builder.makeLoad(4, false, offset, align, Type::i32, mem);
-    }
-    case BinaryConsts::I64LoadMem8S: {
-      auto [mem, align, offset, backing] = getMemarg();
-      return builder.makeLoad(1, true, offset, align, Type::i64, mem);
-    }
-    case BinaryConsts::I64LoadMem8U: {
-      auto [mem, align, offset, backing] = getMemarg();
-      return builder.makeLoad(1, false, offset, align, Type::i64, mem);
-    }
-    case BinaryConsts::I64LoadMem16S: {
-      auto [mem, align, offset, backing] = getMemarg();
-      return builder.makeLoad(2, true, offset, align, Type::i64, mem);
-    }
-    case BinaryConsts::I64LoadMem16U: {
-      auto [mem, align, offset, backing] = getMemarg();
-      return builder.makeLoad(2, false, offset, align, Type::i64, mem);
-    }
-    case BinaryConsts::I64LoadMem32S: {
-      auto [mem, align, offset, backing] = getMemarg();
-      return builder.makeLoad(4, true, offset, align, Type::i64, mem);
-    }
-    case BinaryConsts::I64LoadMem32U: {
-      auto [mem, align, offset, backing] = getMemarg();
-      return builder.makeLoad(4, false, offset, align, Type::i64, mem);
-    }
-    case BinaryConsts::I64LoadMem: {
-      auto [mem, align, offset, backing] = getMemarg();
-      return builder.makeLoad(8, false, offset, align, Type::i64, mem);
-    }
-    case BinaryConsts::F32LoadMem: {
-      auto [mem, align, offset, backing] = getMemarg();
-      return builder.makeLoad(4, false, offset, align, Type::f32, mem);
-    }
-    case BinaryConsts::F64LoadMem: {
-      auto [mem, align, offset, backing] = getMemarg();
-      return builder.makeLoad(8, false, offset, align, Type::f64, mem);
-    }
+    case BinaryConsts::I32LoadMem8S:
+      return readLoad(1, true, Type::i32);
+    case BinaryConsts::I32LoadMem8U:
+      return readLoad(1, false, Type::i32);
+    case BinaryConsts::I32LoadMem16S:
+      return readLoad(2, true, Type::i32);
+    case BinaryConsts::I32LoadMem16U:
+      return readLoad(2, false, Type::i32);
+    case BinaryConsts::I32LoadMem:
+      return readLoad(4, false, Type::i32);
+    case BinaryConsts::I64LoadMem8S:
+      return readLoad(1, true, Type::i64);
+    case BinaryConsts::I64LoadMem8U:
+      return readLoad(1, false, Type::i64);
+    case BinaryConsts::I64LoadMem16S:
+      return readLoad(2, true, Type::i64);
+    case BinaryConsts::I64LoadMem16U:
+      return readLoad(2, false, Type::i64);
+    case BinaryConsts::I64LoadMem32S:
+      return readLoad(4, true, Type::i64);
+    case BinaryConsts::I64LoadMem32U:
+      return readLoad(4, false, Type::i64);
+    case BinaryConsts::I64LoadMem:
+      return readLoad(8, false, Type::i64);
+    case BinaryConsts::F32LoadMem:
+      return readLoad(4, false, Type::f32);
+    case BinaryConsts::F64LoadMem:
+      return readLoad(8, false, Type::f64);
     case BinaryConsts::I32StoreMem8: {
       return readStore(1, Type::i32);
     }
@@ -4000,6 +3998,10 @@ Result<> WasmBinaryReader::readInst() {
         }
         case BinaryConsts::MemoryFill:
           return builder.makeMemoryFill(getMemoryName(getU32LEB()));
+        case BinaryConsts::I64Add128:
+          return builder.makeWideIntAddSub(AddInt128);
+        case BinaryConsts::I64Sub128:
+          return builder.makeWideIntAddSub(SubInt128);
         case BinaryConsts::TableSize:
           return builder.makeTableSize(getTableName(getU32LEB()));
         case BinaryConsts::TableGrow:
@@ -4478,6 +4480,12 @@ Result<> WasmBinaryReader::readInst() {
           return builder.makeUnary(ConvertSVecI16x8ToVecF16x8);
         case BinaryConsts::F16x8ConvertI16x8U:
           return builder.makeUnary(ConvertUVecI16x8ToVecF16x8);
+        case BinaryConsts::F16x8DemoteF32x4Zero:
+          return builder.makeUnary(DemoteZeroVecF32x4ToVecF16x8);
+        case BinaryConsts::F16x8DemoteF64x2Zero:
+          return builder.makeUnary(DemoteZeroVecF64x2ToVecF16x8);
+        case BinaryConsts::F32x4PromoteLowF16x8:
+          return builder.makeUnary(PromoteLowVecF16x8ToVecF32x4);
         case BinaryConsts::I8x16ExtractLaneS:
           return builder.makeSIMDExtract(ExtractLaneSVecI8x16,
                                          getLaneIndex(16));
@@ -5039,6 +5047,17 @@ void WasmBinaryReader::readTableDeclarations() {
   for (size_t i = 0; i < num; i++) {
     auto [name, isExplicit] = getOrMakeName(
       tableNames, numImports + i, makeName("", i), usedTableNames);
+    bool hasInit = false;
+    if (peekInt8() == BinaryConsts::HasTableInitializer) {
+      // Skip past the peeked byte.
+      getInt8();
+      auto reservedByte = getInt8();
+      if (reservedByte != BinaryConsts::TableReservedByte) {
+        // Byte reserved for future extension, must be zero for now.
+        throwError("Malformed table");
+      }
+      hasInit = true;
+    }
     auto elemType = getType();
     if (!elemType.isRef()) {
       throwError("Table type must be a reference type");
@@ -5058,6 +5077,10 @@ void WasmBinaryReader::readTableDeclarations() {
     }
     if (pageSize != 0xff) {
       throwError("Tables may not specify a custom page size");
+    }
+    if (hasInit) {
+      auto* init = readExpression();
+      table->init = init;
     }
     wasm.addTable(std::move(table));
   }
@@ -5433,6 +5456,8 @@ void WasmBinaryReader::readFeatures(size_t sectionPos, size_t payloadLen) {
       feature = FeatureSet::RelaxedAtomics;
     } else if (name == BinaryConsts::CustomSections::CustomPageSizesFeature) {
       feature = FeatureSet::CustomPageSizes;
+    } else if (name == BinaryConsts::CustomSections::WideArithmeticFeature) {
+      feature = FeatureSet::WideArithmetic;
     } else {
       // Silently ignore unknown features (this may be and old binaryen running
       // on a new wasm).
