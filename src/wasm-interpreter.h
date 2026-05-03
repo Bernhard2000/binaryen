@@ -41,6 +41,7 @@
 #include "ir/memory-utils.h"
 #include "ir/module-utils.h"
 #include "ir/properties.h"
+#include "ir/runtime-global.h"
 #include "ir/runtime-table.h"
 #include "ir/table-utils.h"
 #include "support/bits.h"
@@ -187,7 +188,7 @@ struct ExnData {
 //
 // The key idea in this approach to suspending and resuming is that to suspend
 // you want to unwind the stack - you "jump" back to some outer scope - and to
-// reume, we want to rewind the stack - to get everything back exactly the way
+// resume, we want to rewind the stack - to get everything back exactly the way
 // it was, so we can pick things back up. And, to achieve that, we really just
 // need two things:
 //    * To rewind the call stack. If we called foo() and then bar(), we want to
@@ -1163,6 +1164,12 @@ public:
         return value.convertSToF16x8();
       case ConvertUVecI16x8ToVecF16x8:
         return value.convertUToF16x8();
+      case PromoteLowVecF16x8ToVecF32x4:
+        return value.promoteLowF16x8ToF32x4();
+      case DemoteZeroVecF32x4ToVecF16x8:
+        return value.demoteZeroF32x4ToF16x8();
+      case DemoteZeroVecF64x2ToVecF16x8:
+        return value.demoteZeroF64x2ToF16x8();
       case InvalidUnary:
         WASM_UNREACHABLE("invalid unary op");
     }
@@ -1794,6 +1801,38 @@ public:
     VISIT(condition, curr->condition)
     return condition.getSingleValue().geti32() ? ifTrue : ifFalse; // ;-)
   }
+  Flow visitWideIntAddSub(WideIntAddSub* curr) {
+    VISIT(leftLow, curr->leftLow);
+    VISIT(leftHigh, curr->leftHigh);
+    VISIT(rightLow, curr->rightLow);
+    VISIT(rightHigh, curr->rightHigh);
+
+    uint64_t lowLHS = leftLow.getSingleValue().geti64();
+    uint64_t highLHS = leftHigh.getSingleValue().geti64();
+    uint64_t lowRHS = rightLow.getSingleValue().geti64();
+    uint64_t highRHS = rightHigh.getSingleValue().geti64();
+
+    uint64_t lowResult = 0;
+    uint64_t highResult = 0;
+
+    switch (curr->op) {
+      case AddInt128: {
+        bool overflowed = std::ckd_add(&lowResult, lowLHS, lowRHS);
+        highResult = highLHS + highRHS + overflowed;
+        break;
+      }
+      case SubInt128: {
+        bool overflowed = std::ckd_sub(&lowResult, lowLHS, lowRHS);
+        highResult = highLHS - highRHS - overflowed;
+        break;
+      }
+    }
+
+    Literals results;
+    results.push_back(Literal(lowResult));
+    results.push_back(Literal(highResult));
+    return results;
+  }
   Flow visitDrop(Drop* curr) {
     VISIT(value, curr->value)
     return Flow();
@@ -1957,7 +1996,7 @@ public:
   Flow visitTryTable(TryTable* curr) { WASM_UNREACHABLE("unimp"); }
   Flow visitThrow(Throw* curr) {
     // Single-module implementation. This is used from Precompute, for example.
-    // It is overriden in ModuleRunner to add logic for finding the proper
+    // It is overridden in ModuleRunner to add logic for finding the proper
     // imported tag (which single-module cases don't care about).
     Literals arguments;
     VISIT_ARGUMENTS(flow, curr->operands, arguments);
@@ -2382,6 +2421,58 @@ public:
     data->values[i] = truncateForPacking(value.getSingleValue(), field);
     return Flow();
   }
+  Flow visitArrayLoad(ArrayLoad* curr) {
+    VISIT(ref, curr->ref)
+    VISIT(index, curr->index)
+    auto data = ref.getSingleValue().getGCData();
+    if (!data) {
+      trap("null ref");
+    }
+    Index i = index.getSingleValue().geti32();
+    size_t size = data->values.size();
+    if (i >= size || curr->bytes > (size - i)) {
+      trap("array oob");
+    }
+    uint64_t val = 0;
+    for (unsigned b = 0; b < curr->bytes; ++b) {
+      val |= static_cast<uint64_t>(data->values[i + b].geti32()) << (b * 8);
+    }
+    switch (curr->type.getBasic()) {
+      case Type::i32: {
+        int32_t sval = static_cast<int32_t>(val);
+        if (curr->signed_) {
+          if (curr->bytes == 1) {
+            sval = static_cast<int32_t>(static_cast<int8_t>(sval));
+          } else if (curr->bytes == 2) {
+            sval = static_cast<int32_t>(static_cast<int16_t>(sval));
+          }
+        }
+        return Literal(sval);
+      }
+      case Type::i64: {
+        int64_t sval = static_cast<int64_t>(val);
+        if (curr->signed_) {
+          if (curr->bytes == 1) {
+            sval = static_cast<int64_t>(static_cast<int8_t>(sval));
+          } else if (curr->bytes == 2) {
+            sval = static_cast<int64_t>(static_cast<int16_t>(sval));
+          } else if (curr->bytes == 4) {
+            sval = static_cast<int64_t>(static_cast<int32_t>(sval));
+          }
+        }
+        return Literal(sval);
+      }
+      case Type::f32: {
+        return Literal(bit_cast<float>(static_cast<int32_t>(val)));
+      }
+      case Type::f64: {
+        return Literal(bit_cast<double>(static_cast<int64_t>(val)));
+      }
+      default:
+        WASM_UNREACHABLE("invalid type");
+    }
+  }
+
   Flow visitArrayStore(ArrayStore* curr) {
     VISIT(ref, curr->ref)
     VISIT(index, curr->index)
@@ -3261,7 +3352,7 @@ public:
   // Keyed by internal name. All globals in the module, including imports.
   // `definedGlobals` contains non-imported globals. Points to `definedGlobals`
   // of this instance and other instances.
-  std::unordered_map<Name, Literals*> allGlobals;
+  std::unordered_map<Name, RuntimeGlobal*> allGlobals;
 
   // Like `allGlobals`. Keyed by internal name. All tables including imports.
   std::unordered_map<Name, RuntimeTable*> allTables;
@@ -3355,7 +3446,7 @@ public:
                    func->type);
   }
 
-  Literals* getExportedGlobalOrNull(Name name) {
+  RuntimeGlobal* getExportedGlobalOrNull(Name name) {
     Export* export_ = wasm.getExportOrNull(name);
     if (!export_ || export_->kind != ExternalKind::Global) {
       return nullptr;
@@ -3389,7 +3480,7 @@ public:
                                << " not found.")
                                 .str());
     }
-    return *global;
+    return global->literals;
   }
 
   Tag* getExportedTagOrNull(Name name) {
@@ -3429,7 +3520,7 @@ private:
   // Globals that were defined in this module and not from an import.
   // `allGlobals` contains these values + imported globals, keyed by their
   // internal name.
-  std::vector<Literals> definedGlobals;
+  std::vector<RuntimeGlobal> definedGlobals;
   std::vector<std::unique_ptr<RuntimeTable>> definedTables;
   std::vector<Tag> definedTags;
 
@@ -3539,9 +3630,27 @@ private:
                   << (*function)->type.getHeapType().getSignature().toString())
                    .str());
           }
+        } else if (auto** globalDecl = std::get_if<Global*>(&import)) {
+          auto* exportedGlobal =
+            importResolver->getGlobalOrNull(importable->importNames(),
+                                            (*globalDecl)->type,
+                                            (*globalDecl)->mutable_);
+          if (!exportedGlobal->isSubType(**globalDecl)) {
+            trap(
+              (std::stringstream()
+               << "Imported global " << importable->importNames()
+               << " with type: "
+               << (exportedGlobal->getMutable() == Mutability::Mutable ? "(mut "
+                                                                       : "")
+               << exportedGlobal->getType()
+               << (exportedGlobal->getMutable() == Mutability::Mutable ? ")"
+                                                                       : "")
+               << " isn't compatible with import declaration: " << **globalDecl)
+                .str());
+          }
         }
 
-        // TODO: remaining cases e.g. globals and tags.
+        // TODO: remaining cases e.g. tags.
       });
   }
 
@@ -3568,7 +3677,10 @@ private:
         assert(inserted && "Unexpected repeated global name");
       } else {
         Literals init = self()->visit(global->init).values;
-        auto& definedGlobal = definedGlobals.emplace_back(std::move(init));
+        auto& definedGlobal =
+          definedGlobals.emplace_back(global->type,
+                                      global->mutable_ ? Mutable : Immutable,
+                                      std::move(init));
 
         [[maybe_unused]] auto [_, inserted] =
           allGlobals.try_emplace(global->name, &definedGlobal);
@@ -3632,12 +3744,17 @@ private:
         // parsing/validation checked this already.
         assert(inserted && "Unexpected repeated table name");
       } else {
-        assert(table->type.isNullable() &&
-               "We only support nullable tables today");
-
-        auto null = Literal::makeNull(table->type.getHeapType());
+        Literal initVal;
+        if (table->init) {
+          initVal =
+            ExpressionRunner<SubType>::visit(table->init).getSingleValue();
+        } else {
+          assert(table->type.isNullable() &&
+                 "Non-nullable table must have an init expressions");
+          initVal = Literal::makeNull(table->type.getHeapType());
+        }
         auto& runtimeTable =
-          definedTables.emplace_back(createTable(null, *table));
+          definedTables.emplace_back(createTable(initVal, *table));
         [[maybe_unused]] auto [_, inserted] =
           allTables.try_emplace(table->name, runtimeTable.get());
         assert(inserted && "Unexpected repeated table name");
@@ -4076,7 +4193,7 @@ public:
     Address sizeVal(uint32_t(size.getSingleValue().geti32()));
 
     if (offsetVal + sizeVal > 0 &&
-        droppedElementSegments.count(curr->segment)) {
+        droppedElementSegments.contains(curr->segment)) {
       trap("out of bounds segment access in table.init");
     }
     if (offsetVal + sizeVal > segment->data.size()) {
@@ -4120,13 +4237,13 @@ public:
 
   Flow visitGlobalGet(GlobalGet* curr) {
     auto name = curr->name;
-    return *allGlobals.at(name);
+    return allGlobals.at(name)->literals;
   }
   Flow visitGlobalSet(GlobalSet* curr) {
     auto name = curr->name;
     VISIT(flow, curr->value)
 
-    *allGlobals.at(name) = flow.values;
+    allGlobals.at(name)->literals = flow.values;
     return Flow();
   }
 
@@ -4494,7 +4611,8 @@ public:
     Address offsetVal(offset.getSingleValue().getUnsigned());
     Address sizeVal(size.getSingleValue().getUnsigned());
 
-    if (offsetVal + sizeVal > 0 && droppedDataSegments.count(curr->segment)) {
+    if (offsetVal + sizeVal > 0 &&
+        droppedDataSegments.contains(curr->segment)) {
       trap("out of bounds segment access in memory.init");
     }
     if (offsetVal + sizeVal > segment->data.size()) {
@@ -4611,7 +4729,7 @@ public:
     if (std::ckd_add(&end, offset, size * elemBytes) || end > seg.data.size()) {
       trap("out of bounds segment access in array.new_data");
     }
-    if (droppedDataSegments.count(curr->segment) && end > 0) {
+    if (droppedDataSegments.contains(curr->segment) && end > 0) {
       trap("dropped segment access in array.new_data");
     }
     contents.reserve(size);
@@ -4638,7 +4756,7 @@ public:
     if (end > seg.data.size()) {
       trap("out of bounds segment access in array.new_elem");
     }
-    if (end > 0 && droppedElementSegments.count(curr->segment)) {
+    if (end > 0 && droppedElementSegments.contains(curr->segment)) {
       trap("out of bounds segment access in array.new_elem");
     }
     contents.reserve(size);
@@ -4675,7 +4793,8 @@ public:
     if (offsetVal + readSize > seg->data.size()) {
       trap("out of bounds segment access in array.init_data");
     }
-    if (offsetVal + sizeVal > 0 && droppedDataSegments.count(curr->segment)) {
+    if (offsetVal + sizeVal > 0 &&
+        droppedDataSegments.contains(curr->segment)) {
       trap("out of bounds segment access in array.init_data");
     }
     for (size_t i = 0; i < sizeVal; i++) {
@@ -4709,7 +4828,7 @@ public:
     if (max > seg->data.size()) {
       trap("out of bounds segment access in array.init_elem");
     }
-    if (max > 0 && droppedElementSegments.count(curr->segment)) {
+    if (max > 0 && droppedElementSegments.contains(curr->segment)) {
       trap("out of bounds segment access in array.init_elem");
     }
     for (size_t i = 0; i < sizeVal; i++) {

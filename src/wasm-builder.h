@@ -107,13 +107,15 @@ public:
                                                            Nullable),
                                           Address initial = 0,
                                           Address max = Table::kMaxSize,
-                                          Type addressType = Type::i32) {
+                                          Type addressType = Type::i32,
+                                          Expression* init = nullptr) {
     auto table = std::make_unique<Table>();
     table->name = name;
     table->type = type;
     table->addressType = addressType;
     table->initial = initial;
     table->max = max;
+    table->init = init;
     return table;
   }
 
@@ -658,6 +660,20 @@ public:
     ret->finalize();
     return ret;
   }
+  WideIntAddSub* makeWideIntAddSub(WideIntAddSubOp op,
+                                   Expression* leftLow,
+                                   Expression* leftHigh,
+                                   Expression* rightLow,
+                                   Expression* rightHigh) {
+    auto* ret = wasm.allocator.alloc<WideIntAddSub>();
+    ret->op = op;
+    ret->leftLow = leftLow;
+    ret->leftHigh = leftHigh;
+    ret->rightLow = rightLow;
+    ret->rightHigh = rightHigh;
+    ret->finalize();
+    return ret;
+  }
   Select*
   makeSelect(Expression* condition, Expression* ifTrue, Expression* ifFalse) {
     auto* ret = wasm.allocator.alloc<Select>();
@@ -1132,6 +1148,21 @@ public:
     ret->finalize();
     return ret;
   }
+  ArrayLoad* makeArrayLoad(unsigned bytes,
+                           bool signed_,
+                           Expression* ref,
+                           Expression* index,
+                           Type type) {
+    auto* ret = wasm.allocator.alloc<ArrayLoad>();
+    ret->bytes = bytes;
+    ret->signed_ = signed_;
+    ret->ref = ref;
+    ret->index = index;
+    ret->type = type;
+    ret->finalize();
+    return ret;
+  }
+
   ArrayStore* makeArrayStore(unsigned bytes,
                              Expression* ref,
                              Expression* index,
@@ -1352,37 +1383,26 @@ public:
                      const std::vector<Name>& handlerBlocks,
                      const std::vector<Type>& sentTypes,
                      ExpressionList&& operands,
-                     Expression* cont) {
+                     Expression* cont,
+                     HeapType contType) {
     auto* ret = wasm.allocator.alloc<Resume>();
     ret->handlerTags.set(handlerTags);
     ret->handlerBlocks.set(handlerBlocks);
     ret->sentTypes.set(sentTypes);
     ret->operands = std::move(operands);
     ret->cont = cont;
+    ret->type = contType.getContinuation().type.getSignature().results;
     ret->finalize();
     return ret;
   }
-  template<typename T>
-  Resume* makeResume(const std::vector<Name>& handlerTags,
-                     const std::vector<Name>& handlerBlocks,
-                     const std::vector<Type>& sentTypes,
-                     ExpressionList& operands,
-                     Expression* cont) {
-    auto* ret = wasm.allocator.alloc<Resume>();
-    ret->handlerTags.set(handlerTags);
-    ret->handlerBlocks.set(handlerBlocks);
-    ret->sentTypes.set(sentTypes);
-    ret->operands.set(operands);
-    ret->cont = cont;
-    ret->finalize();
-    return ret;
-  }
+
   ResumeThrow* makeResumeThrow(Name tag,
                                const std::vector<Name>& handlerTags,
                                const std::vector<Name>& handlerBlocks,
                                const std::vector<Type>& sentTypes,
                                ExpressionList&& operands,
-                               Expression* cont) {
+                               Expression* cont,
+                               HeapType contType) {
     auto* ret = wasm.allocator.alloc<ResumeThrow>();
     ret->tag = tag;
     ret->handlerTags.set(handlerTags);
@@ -1390,6 +1410,7 @@ public:
     ret->sentTypes.set(sentTypes);
     ret->operands = std::move(operands);
     ret->cont = cont;
+    ret->type = contType.getContinuation().type.getSignature().results;
     ret->finalize();
     return ret;
   }

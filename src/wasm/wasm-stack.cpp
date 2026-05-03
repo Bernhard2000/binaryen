@@ -15,10 +15,8 @@
  */
 
 #include "wasm-stack.h"
-#include "ir/find_all.h"
 #include "ir/properties.h"
 #include "wasm-binary.h"
-#include "wasm-debug.h"
 
 namespace wasm {
 
@@ -120,6 +118,74 @@ void BinaryInstWriter::emitStoreOpcode(uint8_t bytes, Type valueType) {
   }
 }
 
+void BinaryInstWriter::emitLoadOpcode(unsigned bytes, bool signed_, Type type) {
+  switch (type.getBasic()) {
+    case Type::i32: {
+      switch (bytes) {
+        case 1:
+          o << static_cast<int8_t>(signed_ ? BinaryConsts::I32LoadMem8S
+                                           : BinaryConsts::I32LoadMem8U);
+          break;
+        case 2:
+          o << static_cast<int8_t>(signed_ ? BinaryConsts::I32LoadMem16S
+                                           : BinaryConsts::I32LoadMem16U);
+          break;
+        case 4:
+          o << static_cast<int8_t>(BinaryConsts::I32LoadMem);
+          break;
+        default:
+          abort();
+      }
+      break;
+    }
+    case Type::i64: {
+      switch (bytes) {
+        case 1:
+          o << static_cast<int8_t>(signed_ ? BinaryConsts::I64LoadMem8S
+                                           : BinaryConsts::I64LoadMem8U);
+          break;
+        case 2:
+          o << static_cast<int8_t>(signed_ ? BinaryConsts::I64LoadMem16S
+                                           : BinaryConsts::I64LoadMem16U);
+          break;
+        case 4:
+          o << static_cast<int8_t>(signed_ ? BinaryConsts::I64LoadMem32S
+                                           : BinaryConsts::I64LoadMem32U);
+          break;
+        case 8:
+          o << static_cast<int8_t>(BinaryConsts::I64LoadMem);
+          break;
+        default:
+          abort();
+      }
+      break;
+    }
+    case Type::f32: {
+      switch (bytes) {
+        case 2:
+          o << static_cast<int8_t>(BinaryConsts::MiscPrefix)
+            << U32LEB(BinaryConsts::F32_F16LoadMem);
+          break;
+        case 4:
+          o << static_cast<int8_t>(BinaryConsts::F32LoadMem);
+          break;
+        default:
+          WASM_UNREACHABLE("invalid load size");
+      }
+      break;
+    }
+    case Type::f64:
+      o << static_cast<int8_t>(BinaryConsts::F64LoadMem);
+      break;
+    case Type::v128:
+      o << static_cast<int8_t>(BinaryConsts::SIMDPrefix)
+        << U32LEB(BinaryConsts::V128Load);
+      break;
+    default:
+      WASM_UNREACHABLE("unexpected type");
+  }
+}
+
 void BinaryInstWriter::visitLoop(Loop* curr) {
   breakStack.push_back(curr->name);
   o << static_cast<int8_t>(BinaryConsts::Loop);
@@ -164,7 +230,7 @@ void BinaryInstWriter::visitBreak(Break* curr) {
   // stash the stack.
   std::vector<Type> typesOnStack;
 
-  auto needHandling = brIfsNeedingHandling.count(curr);
+  auto needHandling = brIfsNeedingHandling.contains(curr);
   if (needHandling) {
     // Tuples always need scratch locals. Uncastable types do as well, we we
     // can't fix them up below with a simple cast.
@@ -237,7 +303,7 @@ void BinaryInstWriter::visitCallIndirect(CallIndirect* curr) {
 }
 
 void BinaryInstWriter::visitLocalGet(LocalGet* curr) {
-  if (deferredGets.count(curr)) {
+  if (deferredGets.contains(curr)) {
     // This local.get will be emitted as part of the instruction that consumes
     // it.
     return;
@@ -315,81 +381,13 @@ void BinaryInstWriter::visitGlobalSet(GlobalSet* curr) {
 }
 
 void BinaryInstWriter::visitLoad(Load* curr) {
+  if (curr->type == Type::unreachable) {
+    // the pointer is unreachable, so we are never reached; just don't emit
+    // a load
+    return;
+  }
   if (!curr->isAtomic()) {
-    switch (curr->type.getBasic()) {
-      case Type::i32: {
-        switch (curr->bytes) {
-          case 1:
-            o << static_cast<int8_t>(curr->signed_
-                                       ? BinaryConsts::I32LoadMem8S
-                                       : BinaryConsts::I32LoadMem8U);
-            break;
-          case 2:
-            o << static_cast<int8_t>(curr->signed_
-                                       ? BinaryConsts::I32LoadMem16S
-                                       : BinaryConsts::I32LoadMem16U);
-            break;
-          case 4:
-            o << static_cast<int8_t>(BinaryConsts::I32LoadMem);
-            break;
-          default:
-            abort();
-        }
-        break;
-      }
-      case Type::i64: {
-        switch (curr->bytes) {
-          case 1:
-            o << static_cast<int8_t>(curr->signed_
-                                       ? BinaryConsts::I64LoadMem8S
-                                       : BinaryConsts::I64LoadMem8U);
-            break;
-          case 2:
-            o << static_cast<int8_t>(curr->signed_
-                                       ? BinaryConsts::I64LoadMem16S
-                                       : BinaryConsts::I64LoadMem16U);
-            break;
-          case 4:
-            o << static_cast<int8_t>(curr->signed_
-                                       ? BinaryConsts::I64LoadMem32S
-                                       : BinaryConsts::I64LoadMem32U);
-            break;
-          case 8:
-            o << static_cast<int8_t>(BinaryConsts::I64LoadMem);
-            break;
-          default:
-            abort();
-        }
-        break;
-      }
-      case Type::f32: {
-        switch (curr->bytes) {
-          case 2:
-            o << static_cast<int8_t>(BinaryConsts::MiscPrefix)
-              << U32LEB(BinaryConsts::F32_F16LoadMem);
-            break;
-          case 4:
-            o << static_cast<int8_t>(BinaryConsts::F32LoadMem);
-            break;
-          default:
-            WASM_UNREACHABLE("invalid load size");
-        }
-        break;
-      }
-      case Type::f64:
-        o << static_cast<int8_t>(BinaryConsts::F64LoadMem);
-        break;
-      case Type::v128:
-        o << static_cast<int8_t>(BinaryConsts::SIMDPrefix)
-          << U32LEB(BinaryConsts::V128Load);
-        break;
-      case Type::unreachable:
-        // the pointer is unreachable, so we are never reached; just don't emit
-        // a load
-        return;
-      case Type::none:
-        WASM_UNREACHABLE("unexpected type");
-    }
+    emitLoadOpcode(curr->bytes, curr->signed_, curr->type);
   } else {
     o << static_cast<int8_t>(BinaryConsts::AtomicPrefix);
     switch (curr->type.getBasic()) {
@@ -428,8 +426,6 @@ void BinaryInstWriter::visitLoad(Load* curr) {
         }
         break;
       }
-      case Type::unreachable:
-        return;
       default:
         WASM_UNREACHABLE("unexpected type");
     }
@@ -1461,6 +1457,18 @@ void BinaryInstWriter::visitUnary(Unary* curr) {
       o << static_cast<int8_t>(BinaryConsts::SIMDPrefix)
         << U32LEB(BinaryConsts::F16x8ConvertI16x8U);
       break;
+    case DemoteZeroVecF32x4ToVecF16x8:
+      o << static_cast<int8_t>(BinaryConsts::SIMDPrefix)
+        << U32LEB(BinaryConsts::F16x8DemoteF32x4Zero);
+      break;
+    case DemoteZeroVecF64x2ToVecF16x8:
+      o << static_cast<int8_t>(BinaryConsts::SIMDPrefix)
+        << U32LEB(BinaryConsts::F16x8DemoteF64x2Zero);
+      break;
+    case PromoteLowVecF16x8ToVecF32x4:
+      o << static_cast<int8_t>(BinaryConsts::SIMDPrefix)
+        << U32LEB(BinaryConsts::F32x4PromoteLowF16x8);
+      break;
     case InvalidUnary:
       WASM_UNREACHABLE("invalid unary op");
   }
@@ -2287,6 +2295,20 @@ void BinaryInstWriter::visitSelect(Select* curr) {
   }
 }
 
+void BinaryInstWriter::visitWideIntAddSub(WideIntAddSub* curr) {
+  o << static_cast<int8_t>(BinaryConsts::MiscPrefix);
+  switch (curr->op) {
+    case AddInt128: {
+      o << U32LEB(BinaryConsts::I64Add128);
+      break;
+    }
+    case SubInt128: {
+      o << U32LEB(BinaryConsts::I64Sub128);
+      break;
+    }
+  }
+}
+
 void BinaryInstWriter::visitReturn(Return* curr) {
   o << static_cast<int8_t>(BinaryConsts::Return);
 }
@@ -2458,7 +2480,7 @@ void BinaryInstWriter::visitTupleMake(TupleMake* curr) {
 }
 
 void BinaryInstWriter::visitTupleExtract(TupleExtract* curr) {
-  if (extractedGets.count(curr->tuple)) {
+  if (extractedGets.contains(curr->tuple)) {
     // We already have just the extracted value on the stack.
     return;
   }
@@ -2787,6 +2809,17 @@ void BinaryInstWriter::visitArraySet(ArraySet* curr) {
   parent.writeIndexedHeapType(curr->ref->type.getHeapType());
 }
 
+void BinaryInstWriter::visitArrayLoad(ArrayLoad* curr) {
+  if (curr->ref->type.isNull()) {
+    emitUnreachable();
+    return;
+  }
+  emitLoadOpcode(curr->bytes, curr->signed_, curr->type);
+  uint32_t alignmentBits = BinaryConsts::HasBackingArrayMask;
+  o << U32LEB(alignmentBits);
+  parent.writeIndexedHeapType(curr->ref->type.getHeapType());
+}
+
 void BinaryInstWriter::visitArrayStore(ArrayStore* curr) {
   if (curr->ref->type.isNull()) {
     emitUnreachable();
@@ -3001,7 +3034,7 @@ void BinaryInstWriter::visitStringWTF16Get(StringWTF16Get* curr) {
   bool posDeferred = false;
   Index posIndex;
   if (auto* get = curr->pos->dynCast<LocalGet>()) {
-    assert(deferredGets.count(get));
+    assert(deferredGets.contains(get));
     posDeferred = true;
     posIndex = mappedLocals[{get->index, 0}];
   } else {
@@ -3028,8 +3061,8 @@ void BinaryInstWriter::visitStringSliceWTF(StringSliceWTF* curr) {
   auto* startGet = curr->start->dynCast<LocalGet>();
   auto* endGet = curr->end->dynCast<LocalGet>();
   if (startGet && endGet) {
-    assert(deferredGets.count(startGet));
-    assert(deferredGets.count(endGet));
+    assert(deferredGets.contains(startGet));
+    assert(deferredGets.contains(endGet));
     deferred = true;
     startIndex = mappedLocals[{startGet->index, 0}];
     endIndex = mappedLocals[{endGet->index, 0}];
@@ -3232,7 +3265,7 @@ void BinaryInstWriter::mapLocalsAndEmitHeader() {
   // Map IR (local index, tuple index) pairs to binary local indices. Since
   // locals are grouped by type, start by calculating the base indices for each
   // type.
-  std::unordered_map<Type, Index> nextFreeIndex;
+  TypeIndexMap nextFreeIndex(parent.getModule()->features);
   Index baseIndex = func->getVarIndexBase();
   for (auto& type : localTypes) {
     nextFreeIndex[type] = baseIndex;
@@ -3252,9 +3285,9 @@ void BinaryInstWriter::mapLocalsAndEmitHeader() {
     scratchLocals[type] = nextFreeIndex[type];
   }
 
-  o << U32LEB(numLocalsByType.size());
+  o << U32LEB(localTypes.size());
   for (auto& localType : localTypes) {
-    o << U32LEB(numLocalsByType.at(localType));
+    o << U32LEB(numLocalsByType[localType]);
     parent.writeType(localType);
   }
 }
@@ -3267,12 +3300,13 @@ void BinaryInstWriter::noteLocalType(Type type, Index count) {
   num += count;
 }
 
-InsertOrderedMap<Type, Index> BinaryInstWriter::countScratchLocals() {
+BinaryInstWriter::TypeIndexMap BinaryInstWriter::countScratchLocals() {
   struct ScratchLocalFinder : PostWalker<ScratchLocalFinder> {
     BinaryInstWriter& parent;
-    InsertOrderedMap<Type, Index> scratches;
+    TypeIndexMap scratches;
 
-    ScratchLocalFinder(BinaryInstWriter& parent) : parent(parent) {}
+    ScratchLocalFinder(BinaryInstWriter& parent)
+      : parent(parent), scratches(parent.parent.getModule()->features) {}
 
     void visitTupleExtract(TupleExtract* curr) {
       if (curr->type == Type::unreachable) {

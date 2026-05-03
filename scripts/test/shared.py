@@ -27,7 +27,7 @@ from pathlib import Path
 
 # The C++ standard whose features are required to build Binaryen.
 # Keep in sync with CMakeLists.txt CXX_STANDARD
-cxx_standard = 17
+cxx_standard = 20
 
 
 def parse_args(args):
@@ -95,8 +95,8 @@ def parse_args(args):
     parser.add_argument(
         '--no-auto-initial-contents', dest='auto_initial_contents',
         action='store_false', default=True,
-        help='Select important initial contents automaticaly in fuzzer. '
-             'Default: disabled.')
+        help='Disables the automatic selection of important initial contents '
+             'in fuzzer.')
 
     return parser.parse_args(args)
 
@@ -130,7 +130,7 @@ if not options.binaryen_bin:
 options.binaryen_bin = os.path.normpath(os.path.abspath(options.binaryen_bin))
 
 if not options.binaryen_lib:
-    options.binaryen_lib = os.path.join(os.path.dirname(options.binaryen_bin),  'lib')
+    options.binaryen_lib = os.path.join(os.path.dirname(options.binaryen_bin), 'lib')
 
 options.binaryen_lib = os.path.normpath(os.path.abspath(options.binaryen_lib))
 
@@ -344,13 +344,14 @@ def fail_if_not_identical_to_file(actual, expected_file):
 
 
 def get_test_dir(name):
-    """Returns the test directory located at BINARYEN_ROOT/test/[name]."""
+    """Return the test directory located at BINARYEN_ROOT/test/[name]."""
     return os.path.join(options.binaryen_test, name)
 
 
 def get_tests(test_dir, extensions=[], recursive=False):
-    """Returns the list of test files in a given directory. 'extensions' is a
-    list of file extensions. If 'extensions' is empty, returns all files.
+    """Return the list of test files in a given directory.
+
+    'extensions' is a list of file extensions. If 'extensions' is empty, returns all files.
     """
     tests = []
     star = '**/*' if recursive else '*'
@@ -387,9 +388,6 @@ SPEC_TESTS_TO_SKIP = [
     # Requires us to write our own floating point parser
     'const.wast',
 
-    # Unlinkable module accepted
-    'linking.wast',
-
     # Invalid module accepted
     'unreached-invalid.wast',
 
@@ -415,33 +413,26 @@ SPEC_TESTSUITE_TESTS_TO_SKIP = [
     'binary.wast',   # Missing data count section validation
     'comments.wast',  # Issue with carriage returns being treated as newlines
     'const.wast',    # Hex float constant not recognized as out of range
-    'conversions.wast',  # Promoted NaN should be canonical
     'data.wast',    # Fail to parse data segment offset abbreviation
     'elem.wast',    # Requires modeling empty declarative segments
     'func.wast',    # Duplicate parameter names not properly rejected
-    'global.wast',  # Fail to parse table
     'if.wast',      # Requires more precise unreachable validation
     'imports.wast',  # Requires fixing handling of mutation to imported globals
     'proposals/threads/imports.wast',  # Missing memory type validation on instantiation
-    'linking.wast',  # Missing global type validation on instantiation
     'proposals/threads/memory.wast',  # Missing memory type validation on instantiation
     'annotations.wast',  # String annotations IDs should be allowed
-    'instance.wast',  # Requires support for table default elements
     'table64.wast',   # Requires validations for table size
     'tag.wast',      # Non-empty tag results allowed by stack switching
     'local_init.wast',  # Requires local validation to respect unnamed blocks
     'ref_func.wast',   # Requires rejecting undeclared functions references
-    'ref_is_null.wast',  # Requires support for non-nullable reference types in tables
     'return_call_indirect.wast',  # Requires more precise unreachable validation
     'select.wast',  # Missing validation of type annotation on select
-    'table.wast',  # Requires support for table default elements
     'unreached-invalid.wast',  # Requires more precise unreachable validation
-    'array.wast',  # Requires support for table default elements
+    'array.wast',  # Failure to parse element segment item abbreviation
     'br_if.wast',  # Requires more precise branch validation
     'br_on_cast.wast',  # Requires host references to not be externalized i31refs
     'br_on_cast_fail.wast',  # Requires host references to not be externalized i31refs
     'extern.wast',    # Requires ref.host wast constants
-    'i31.wast',       # Requires support for table default elements
     'ref_cast.wast',  # Requires host references to not be externalized i31refs
     'ref_test.wast',  # Requires host references to not be externalized i31refs
     'struct.wast',    # Fails to roundtrip unnamed types e.g. `(ref 0)`
@@ -471,15 +462,14 @@ options.spec_tests = [t for t in options.spec_tests if _can_run_spec_test(t)]
 # check utilities
 
 
-def binary_format_check(wast, verify_final_result=True, wasm_as_args=['-g'],
-                        binary_suffix='.fromBinary', base_name=None, stdout=None):
+def binary_format_check(wast, verify_final_result=True, base_name=None, stdout=None):
     # checks we can convert the wast to binary and back
 
     as_file = f"{base_name}-a.wasm" if base_name is not None else "a.wasm"
     disassembled_file = f"{base_name}-ab.wast" if base_name is not None else "ab.wast"
 
     print('         (binary format check)', file=stdout)
-    cmd = WASM_AS + [wast, '-o', as_file, '-all'] + wasm_as_args
+    cmd = WASM_AS + [wast, '-o', as_file, '-all', '-g']
     print('            ', ' '.join(cmd), file=stdout)
     if os.path.exists(as_file):
         os.unlink(as_file)
@@ -500,7 +490,7 @@ def binary_format_check(wast, verify_final_result=True, wasm_as_args=['-g'],
 
     if verify_final_result:
         actual = open(disassembled_file).read()
-        fail_if_not_identical_to_file(actual, wast + binary_suffix)
+        fail_if_not_identical_to_file(actual, wast + '.fromBinary')
 
     return disassembled_file
 

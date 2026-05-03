@@ -284,6 +284,9 @@ struct CostAnalyzer : public OverriddenVisitor<CostAnalyzer, CostType> {
       case TruncSatUVecF16x8ToVecI16x8:
       case ConvertSVecI16x8ToVecF16x8:
       case ConvertUVecI16x8ToVecF16x8:
+      case PromoteLowVecF16x8ToVecF32x4:
+      case DemoteZeroVecF32x4ToVecF16x8:
+      case DemoteZeroVecF64x2ToVecF16x8:
         ret = 1;
         break;
       case InvalidUnary:
@@ -572,6 +575,10 @@ struct CostAnalyzer : public OverriddenVisitor<CostAnalyzer, CostType> {
     }
     return ret + visit(curr->left) + visit(curr->right);
   }
+  CostType visitWideIntAddSub(WideIntAddSub* curr) {
+    return 1 + visit(curr->leftLow) + visit(curr->leftHigh) +
+           visit(curr->rightLow) + visit(curr->rightHigh);
+  }
   CostType visitSelect(Select* curr) {
     return 1 + visit(curr->condition) + visit(curr->ifTrue) +
            visit(curr->ifFalse);
@@ -752,6 +759,9 @@ struct CostAnalyzer : public OverriddenVisitor<CostAnalyzer, CostType> {
   CostType visitArraySet(ArraySet* curr) {
     return 2 + nullCheckCost(curr->ref) + visit(curr->ref) +
            visit(curr->index) + visit(curr->value);
+  }
+  CostType visitArrayLoad(ArrayLoad* curr) {
+    return 1 + nullCheckCost(curr->ref) + visit(curr->ref) + visit(curr->index);
   }
   CostType visitArrayStore(ArrayStore* curr) {
     return 2 + nullCheckCost(curr->ref) + visit(curr->ref) +
