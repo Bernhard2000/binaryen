@@ -89,9 +89,16 @@ struct InstrumentPGO : public WalkerPass<PostWalker<InstrumentPGO>> {
 
     module->addFunction(std::move(func));
 
-    // Add export
-    auto export_ = Builder::makeExport(GET_PROFILE_DATA, GET_PROFILE_DATA, ExternalKind::Function);
-    module->addExport(std::move(export_));
+    // Add exports
+    auto exportFunc = Builder::makeExport(GET_PROFILE_DATA, GET_PROFILE_DATA, ExternalKind::Function);
+    module->addExport(std::move(exportFunc));
+
+    // Export the PGO globals so they can be accessed from JavaScript
+    auto exportBase = Builder::makeExport(PGO_COUNTERS_BASE, PGO_COUNTERS_BASE, ExternalKind::Global);
+    module->addExport(std::move(exportBase));
+
+    auto exportSize = Builder::makeExport(PGO_COUNTERS_SIZE, PGO_COUNTERS_SIZE, ExternalKind::Global);
+    module->addExport(std::move(exportSize));
   }
 
   void visitFunction(Function* curr) {
