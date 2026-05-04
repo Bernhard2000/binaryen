@@ -325,7 +325,13 @@ struct BranchSeeker
   void visitExpression(Expression* curr) {
     operateOnScopeNameUsesAndSentTypes(curr, [&](Name& name, Type type) {
       if (name == target) {
-        noteFound(type);
+        // Only count concrete taken branches (reachable branches)
+        // A branch is concrete/taken if:
+        // 1. The branch expression itself is not unreachable
+        // 2. The branch is reachable (no unreachable children)
+        if (curr->type != Type::unreachable && isBranchReachable(curr)) {
+          noteFound(type);
+        }
       }
     });
   }
