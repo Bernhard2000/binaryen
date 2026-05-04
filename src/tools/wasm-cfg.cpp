@@ -81,9 +81,11 @@ int main(int argc, const char* argv[]) {
     for (const auto& block : cfg) {
       Index id = block.getIndex();
       // Using function name to ensure unique node names across functions
+      // Format matches PGO instrumentation: function_name.block_index
+      std::string blockId = std::string(func->name.str) + ".block_" + std::to_string(id);
       std::string nodeName = "f_" + std::string(func->name.str) + "_" + std::to_string(id);
       
-      std::cout << "    \"" << escape(nodeName) << "\" [label=\"Block " << id << "\\n";
+      std::cout << "    \"" << escape(nodeName) << "\" [label=\"Block " << blockId << "\\n";
       for (auto* inst : block) {
         std::stringstream ss;
         ss << ShallowExpression{inst, &wasm};
