@@ -61,12 +61,41 @@ struct InstrumentPGO : public WalkerPass<PostWalker<InstrumentPGO>> {
     // First pass: count blocks
     Super::run(module);
 
+    // Calculate the size needed for counters
+    const uint32_t counterSize = totalBlocks * 4;
+    
+    // Ensure memory has enough space for counters
+    // We place counters at the END of the allocated memory to avoid overlapping
+    // with program data which typically starts at address 0.
+    auto& memory = *module->memories[0];
+    const uint32_t pageSize = 1 << memory.pageSizeLog2;
+    const uint32_t totalMemorySize = pageSize * memory.initial;
+    
+    // Check if we need more memory
+    if (counterSize > totalMemorySize) {
+      // Need more pages
+      const uint32_t pagesNeeded = (counterSize + pageSize - 1) / pageSize;
+      if (memory.initial < pagesNeeded) {
+        memory.initial = pagesNeeded;
+        if (memory.max < pagesNeeded) {
+          memory.max = pagesNeeded;
+        }
+      }
+    }
+
     // Now that we've counted blocks, add the globals and export
     // Create a global to hold the base address of the counters
+    // Place counters at the end of memory minus counter size
+    // This ensures they don't overlap with program data
     auto baseGlobal = std::make_unique<Global>();
     baseGlobal->name = PGO_COUNTERS_BASE;
     baseGlobal->type = Type::i32;
-    baseGlobal->init = Builder(*module).makeConst(0);
+    // Calculate base address: end of memory - counter size
+    // This places counters at the highest addresses, leaving lower addresses
+    // free for program data
+    const uint32_t newTotalMemorySize = pageSize * memory.initial;
+    const uint32_t baseAddress = newTotalMemorySize - counterSize;
+    baseGlobal->init = Builder(*module).makeConst(int32_t(baseAddress));
     baseGlobal->mutable_ = true;
     module->addGlobal(std::move(baseGlobal));
 
@@ -74,7 +103,7 @@ struct InstrumentPGO : public WalkerPass<PostWalker<InstrumentPGO>> {
     auto sizeGlobal = std::make_unique<Global>();
     sizeGlobal->name = PGO_COUNTERS_SIZE;
     sizeGlobal->type = Type::i32;
-    sizeGlobal->init = Builder(*module).makeConst(int32_t(totalBlocks * 4));
+    sizeGlobal->init = Builder(*module).makeConst(int32_t(counterSize));
     sizeGlobal->mutable_ = true;
     module->addGlobal(std::move(sizeGlobal));
 
