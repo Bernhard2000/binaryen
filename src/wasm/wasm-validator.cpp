@@ -509,6 +509,7 @@ public:
   void visitMemoryFill(MemoryFill* curr);
   void visitBinary(Binary* curr);
   void visitWideIntAddSub(WideIntAddSub* curr);
+  void visitWideIntMul(WideIntMul* curr);
   void visitUnary(Unary* curr);
   void visitSelect(Select* curr);
   void visitDrop(Drop* curr);
@@ -1578,15 +1579,15 @@ void FunctionValidator::visitSIMDShuffle(SIMDShuffle* curr) {
 void FunctionValidator::visitSIMDTernary(SIMDTernary* curr) {
   FeatureSet required = FeatureSet::None;
   switch (curr->op) {
-    case LaneselectI8x16:
-    case LaneselectI16x8:
-    case LaneselectI32x4:
-    case LaneselectI64x2:
+    case RelaxedLaneselectI8x16:
+    case RelaxedLaneselectI16x8:
+    case RelaxedLaneselectI32x4:
+    case RelaxedLaneselectI64x2:
     case RelaxedMaddVecF32x4:
     case RelaxedNmaddVecF32x4:
     case RelaxedMaddVecF64x2:
     case RelaxedNmaddVecF64x2:
-    case DotI8x16I7x16AddSToVecI32x4:
+    case RelaxedDotI8x16I7x16AddSToVecI32x4:
       required |= FeatureSet::RelaxedSIMD | FeatureSet::SIMD;
       break;
     case MaddVecF16x8:
@@ -2094,7 +2095,7 @@ void FunctionValidator::visitBinary(Binary* curr) {
     case SwizzleVecI8x16:
     case RelaxedSwizzleVecI8x16:
     case RelaxedQ15MulrSVecI16x8:
-    case DotI8x16I7x16SToVecI16x8: {
+    case RelaxedDotI8x16I7x16SToVecI16x8: {
       shouldBeEqualOrFirstIsUnreachable(
         curr->left->type, Type(Type::v128), curr, "v128 op");
       shouldBeEqualOrFirstIsUnreachable(
@@ -2454,6 +2455,20 @@ void FunctionValidator::visitWideIntAddSub(WideIntAddSub* curr) {
 
   for (auto* operand :
        {curr->leftLow, curr->leftHigh, curr->rightLow, curr->rightHigh}) {
+    shouldBeEqualOrFirstIsUnreachable(operand->type,
+                                      Type(Type::i64),
+                                      curr,
+                                      "wide binary child types must be i64");
+  }
+}
+
+void FunctionValidator::visitWideIntMul(WideIntMul* curr) {
+  shouldBeTrue(getModule()->features.hasWideArithmetic(),
+               curr,
+               "i64.mul_wide_s / i64.mul_wide_u require wide arithmetic "
+               "[--enable-wide-arithmetic]");
+
+  for (auto* operand : {curr->left, curr->right}) {
     shouldBeEqualOrFirstIsUnreachable(operand->type,
                                       Type(Type::i64),
                                       curr,

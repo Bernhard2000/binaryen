@@ -365,6 +365,8 @@
 ;; CHECK-NEXT:
 ;; CHECK-NEXT:   --print                                       print in s-expression format
 ;; CHECK-NEXT:
+;; CHECK-NEXT:   --print-boundary                              print boundary in JSON format
+;; CHECK-NEXT:
 ;; CHECK-NEXT:   --print-call-graph                            print call graph
 ;; CHECK-NEXT:
 ;; CHECK-NEXT:   --print-features                              print options for enabled
@@ -385,6 +387,8 @@
 ;; CHECK-NEXT:
 ;; CHECK-NEXT:   --propagate-globals-globally                  propagate global values to other
 ;; CHECK-NEXT:                                                 globals (useful for tests)
+;; CHECK-NEXT:
+;; CHECK-NEXT:   --remove-exports                              removes exports using a wildcard
 ;; CHECK-NEXT:
 ;; CHECK-NEXT:   --remove-imports                              removes imports and replaces
 ;; CHECK-NEXT:                                                 them with nops

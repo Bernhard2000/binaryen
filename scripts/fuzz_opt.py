@@ -75,7 +75,6 @@ DISALLOWED_FEATURES_IN_V8 = [
     'fp16',
     'strings',
     'stack-switching',
-    'relaxed-atomics',
     'multibyte',
     'wide-arithmetic',
 ]
@@ -2202,6 +2201,7 @@ class PreserveImportsExportsJS(TestCaseHandler):
             input,
             '-ttf',
             '--fuzz-preserve-imports-exports',
+            '--fuzz-against-js',
             '--initial-fuzz=' + wat_file,
             '-o', pre_wasm,
             '-g',
@@ -2525,7 +2525,7 @@ testcase_handlers = [
     TrapsNeverHappen(),
     CtorEval(),
     Merge(),
-    # Split(), # https://github.com/WebAssembly/binaryen/issues/8510
+#    Split(), # Will reenable after stabilized
     RoundtripText(),
     ClusterFuzz(),
     Two(),

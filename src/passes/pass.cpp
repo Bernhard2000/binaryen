@@ -395,6 +395,8 @@ void PassRegistry::registerPasses() {
   registerPass(
     "print-full", "print in full s-expression format", createFullPrinterPass);
   registerPass(
+    "print-boundary", "print boundary in JSON format", createPrintBoundaryPass);
+  registerPass(
     "print-call-graph", "print call graph", createPrintCallGraphPass);
 
   // Register PrintFunctionMap using its normal name.
@@ -416,6 +418,9 @@ void PassRegistry::registerPasses() {
   registerPass("remove-relaxed-simd",
                "replaces relaxed SIMD instructions with unreachable",
                createRemoveRelaxedSIMDPass);
+  registerPass("remove-exports",
+               "removes exports using a wildcard",
+               createRemoveExportsPass);
   registerPass("remove-imports",
                "removes imports and replaces them with nops",
                createRemoveImportsPass);

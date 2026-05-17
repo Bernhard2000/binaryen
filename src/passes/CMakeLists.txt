@@ -90,6 +90,7 @@ set(passes_SOURCES
   PostEmscripten.cpp
   Precompute.cpp
   Print.cpp
+  PrintBoundary.cpp
   PrintCallGraph.cpp
   PrintFeatures.cpp
   PrintFunctionMap.cpp
@@ -106,6 +107,7 @@ set(passes_SOURCES
   TraceCalls.cpp
   RandomizeBranchHints.cpp
   RedundantSetElimination.cpp
+  RemoveExports.cpp
   RemoveImports.cpp
   RemoveMemoryInit.cpp
   RemoveNonJSOps.cpp

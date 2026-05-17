@@ -72,6 +72,10 @@
 ;; CHECK-NEXT:   --fuzz-preserve-imports-exports               don't add imports and exports in
 ;; CHECK-NEXT:                                                 -ttf mode, and keep the start
 ;; CHECK-NEXT:
+;; CHECK-NEXT:   --fuzz-against-js                             modify the wasm in valid ways
+;; CHECK-NEXT:                                                 that assume it is used only from
+;; CHECK-NEXT:                                                 JS
+;; CHECK-NEXT:
 ;; CHECK-NEXT:   --fuzz-import                                 a module to use as an import in
 ;; CHECK-NEXT:                                                 -ttf mode
 ;; CHECK-NEXT:
@@ -397,6 +401,8 @@
 ;; CHECK-NEXT:
 ;; CHECK-NEXT:   --print                                       print in s-expression format
 ;; CHECK-NEXT:
+;; CHECK-NEXT:   --print-boundary                              print boundary in JSON format
+;; CHECK-NEXT:
 ;; CHECK-NEXT:   --print-call-graph                            print call graph
 ;; CHECK-NEXT:
 ;; CHECK-NEXT:   --print-features                              print options for enabled
@@ -417,6 +423,8 @@
 ;; CHECK-NEXT:
 ;; CHECK-NEXT:   --propagate-globals-globally                  propagate global values to other
 ;; CHECK-NEXT:                                                 globals (useful for tests)
+;; CHECK-NEXT:
+;; CHECK-NEXT:   --remove-exports                              removes exports using a wildcard
 ;; CHECK-NEXT:
 ;; CHECK-NEXT:   --remove-imports                              removes imports and replaces
 ;; CHECK-NEXT:                                                 them with nops
