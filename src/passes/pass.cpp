@@ -189,6 +189,9 @@ void PassRegistry::registerPasses() {
   registerPass("generate-global-effects",
                "generate global effect info (helps later passes)",
                createGenerateGlobalEffectsPass);
+  registerPass("function-splitting",
+               "split large functions to fit within a size limit",
+               createFunctionSplittingPass);
   registerPass(
     "global-refining", "refine the types of globals", createGlobalRefiningPass);
   registerPass(

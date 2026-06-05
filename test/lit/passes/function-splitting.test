@@ -1,0 +1,28 @@
+RUN: wasm-opt --function-splitting --function-splitting-limit=10 --function-splitting-verbose=true %s 2>&1 | filecheck %s
+
+;; Test that function splitting works on a simple function that exceeds the limit
+
+;; Input: A function with more than 10 instructions
+(module
+  (func $large (param $x i32) (result i32)
+    (local.get $x)
+    (i32.const 1)
+    (i32.add)
+    (local.get $x)
+    (i32.const 2)
+    (i32.add)
+    (local.get $x)
+    (i32.const 3)
+    (i32.add)
+    (local.get $x)
+    (i32.const 4)
+    (i32.add)
+    (local.get $x)
+    (i32.const 5)
+    (i32.add)
+    (return)
+  )
+)
+
+;; CHECK: Function Splitting Pass: limit=10, switch-threshold=200
+;; CHECK: Splitting function: $large (size: 15)

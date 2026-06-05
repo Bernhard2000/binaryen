@@ -40,6 +40,7 @@ set(passes_SOURCES
   EncloseWorld.cpp
   ExtractFunction.cpp
   Flatten.cpp
+  FunctionSplitting.cpp
   FuncCastEmulation.cpp
   GenerateDynCalls.cpp
   GlobalEffects.cpp

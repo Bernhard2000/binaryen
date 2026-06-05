@@ -58,6 +58,7 @@ Pass* createFullPrinterPass();
 Pass* createFunctionMetricsPass();
 Pass* createGenerateDynCallsPass();
 Pass* createGenerateI64DynCallsPass();
+Pass* createFunctionSplittingPass();
 Pass* createGenerateGlobalEffectsPass();
 Pass* createGlobalRefiningPass();
 Pass* createGlobalStructInferencePass();
